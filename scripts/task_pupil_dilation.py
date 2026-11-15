@@ -30,20 +30,33 @@ from pupil_analysis.pupil import binned_trace, load_pupil_diameter, window_dilat
 VALID_MM = (0.5, 9.0)
 MIN_CONFIDENCE = 0.8
 
+# Task selection, so the same task lines up across chart types.
+# Stackarea's absolute-value question counts as "value"; its relative variants are not analysed.
+TASK_ALIASES = {("stackarea", "value-absolute"): "value"}
+DROP_TASKS = {("stackarea", "value-relative"), ("stackarea", "comparisons-relative")}
+
 
 def task_windows(timeline: pd.DataFrame) -> pd.DataFrame:
-    """Pair each graph with the fixation cross of the same task: baseline = cross shown -> hidden."""
+    """Pair each graph with the fixation cross of the same task: baseline = cross shown -> hidden.
+
+    Tasks in DROP_TASKS are skipped and TASK_ALIASES renames tasks; `source_task` keeps the
+    study's own name. `order` is the chart's position among all charts shown, dropped ones included.
+    """
     cross = timeline[timeline.event == "fixation_cross"].set_index(["block", "task"])
     graph = timeline[timeline.event == "graph"]
     rows = []
     for order, g in enumerate(graph.to_dict("records"), 1):
-        c = cross.loc[(g["block"], g["task"])]
+        key = (g["block"], g["task"])
+        if key in DROP_TASKS:
+            continue
+        c = cross.loc[key]
         rows.append(
             {
                 "order": order,
                 "block_index": g["block_index"],
                 "block": g["block"],
-                "task": g["task"],
+                "task": TASK_ALIASES.get(key, g["task"]),
+                "source_task": g["task"],
                 "is_correct": g["is_correct"],
                 "baseline_start": c["start_pupil_s"],
                 "baseline_end": c["end_pupil_s"],
@@ -58,8 +71,7 @@ def task_windows(timeline: pd.DataFrame) -> pd.DataFrame:
 
 
 # Column order of the plot grid: related tasks side by side. Tasks not listed go at the end.
-TASK_ORDER = ["value", "value-relative", "value-absolute", "comparisons", "comparisons-relative", "trends",
-              "extremum", "range"]  # fmt: skip
+TASK_ORDER = ["value", "comparisons", "trends", "extremum", "range"]
 
 
 def plot(pupil: pd.DataFrame, result: pd.DataFrame):

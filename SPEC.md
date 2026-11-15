@@ -46,6 +46,12 @@ Each row has start/end on every clock, plus `in_recording`.
 ## Pupil dilation per task (`scripts/task_pupil_dilation.py`)
 
 Output: `<pid>_pupil_dilation.csv`, one row per task.
+
+Task selection, set in `TASK_ALIASES` and `DROP_TASKS` so that tasks line up across chart types:
+- Stackarea's `value-absolute` is analysed as `value`.
+- Stackarea's `value-relative` and `comparisons-relative` are not analysed (less of interest).
+- The study's own task name is kept in `source_task`.
+
 - **Baseline:** for each eye separately, the mean diameter over the task's 5 s fixation cross
   (cross shown → hidden).
 - **Task mean change:** mean over the chart slide minus the baseline, in px and in %. The eye-combined
