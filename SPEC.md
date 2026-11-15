@@ -105,6 +105,56 @@ Gaze is checked against Pupil Capture's 4 validations (marker position in the wo
 `sync_video.py` therefore draws recorded gaze by default, minus the validation offset interpolated in time.
 Player's exported fixations are corrected with the Player-gaze offsets, since they were detected on that gaze.
 
+## Gaze on the screen recording (`scripts/screen_mapping.py`, `pupil_analysis/surface.py`)
+
+`uv run python scripts/screen_mapping.py recordings/<pid>` maps gaze into screen-recording pixels
+(content area 2386 x 1668 px, above the letterbox; measured as the first all-black row).
+
+Method:
+1. **Tags.** AprilTags 4 (top right), 5 (bottom right), 6 (top left) and 7 (bottom left) sit on the tablet bezel.
+   - Pupil Player's detections are filled in with OpenCV's tag36h11 detector (sub-pixel corners), cached in
+     `<pid>_tags_opencv.csv`.
+   - OpenCV corner k = Player corner `[1, 0, 3, 2][k]`, checked on frames where both detect a tag.
+   - On p1, OpenCV adds 12,225 detections. It finds tags in the dark area/line validation frames, where
+     Player finds none.
+2. **Undistortion.** All world points are undistorted with `world.intrinsics` (radial model, k1 = -0.38).
+   OpenCV's default 5 iterations are up to 21 px wrong near the image corners, so the code uses 100.
+3. **Tag model.** A fixed set of 16 tag corners in one plane, from the median over frames that see all 4 tags.
+4. **Display corners.** During the validation markers the screen is all white.
+   - In each such frame with >= 3 tags, the bright quadrilateral's edges are line-fit after undistortion,
+     trimming the rounded corners.
+   - The corners are mapped into the tag plane and median-combined, then sent to the recording's content corners.
+   - The tag model is therefore expressed in screen-recording px.
+   - p1: 399/399 frames; each frame lies within 1.3–2.4 px of the median.
+5. **Per frame.** Camera pose by PnP on the calibrated camera (>= 2 tags; screen px are a metric plane frame).
+   - A free 8-DOF homography (`--method homography`) extrapolates badly when only the two right-hand tags
+     are visible: up to 205 px at the far marker, vs 104 px with the pose.
+6. **Gaze.** Recorded gaze, offset-corrected at the validations, uses the pose of the world frame it falls in.
+   Output: `<pid>_gaze_screen.csv` (`sx`, `sy` in px, top-left origin; `n_tags`, `tags`).
+   p1: 97.1% of samples mapped.
+
+Checks (`<pid>_screen_mapping_check.csv/.png`; summary in `<pid>_screen_mapping.json`):
+- **Geometry only:** Pupil Capture's world-image detection of each validation marker, mapped to the screen,
+  vs the marker centre in the screen recording.
+  - 4 tags visible (stackarea validation): 2–10 px.
+  - Only tags 4+5 (pre-study, area and line validations; dark exposure): 6–42 px, but 95–104 px at the far
+    left marker.
+- **Tag-subset simulation:** on 4-tag chart frames, drop tags and compare with the 4-tag pose
+  (20 display grid points).
+  - 3 tags: median 6–11 px, 95th percentile <= 23 px.
+  - 2 tags: median 6–12 px, 95th percentile <= 46 px.
+  - During charts, 94% of frames have >= 3 tags and 6% have 2.
+- **End to end:** mapped gaze during each fixation cross vs the cross position (1501, 905 px).
+  - Median 37 px, max 81 px (15 crosses).
+  - Since the geometry is ~5 px there, this is mostly the residual gaze-calibration error.
+  - 1 world px is about 4.6 screen px, so this matches the 11–27 world-px validation offsets.
+
+`sync_video.py` draws this gaze on the screen panel: green samples and a red mean ring, for the world
+frame shown on the left. It now crops the screen recording to exactly 1668 rows. Before, it used 0.84 of 1964 rows,
+which cut the bottom 18 rows of the content.
+
+Not yet done: annotation strokes (canvas coordinates) mapped into screen px, so that gaze and strokes can be compared.
+
 ## Provenance records (`pupil_analysis/provenance.py`)
 
 Each output that involves shifts gets a JSON record next to it. Every record includes the time it was made,
