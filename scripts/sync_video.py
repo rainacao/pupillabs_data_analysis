@@ -14,7 +14,9 @@ Layout:
   interpolated in time (see `pupil_analysis.gaze`); `--no-gaze-correction` turns that off.
   Fixations come from the newest Pupil Player export (`exports/*/fixations.csv`). They were detected
   on Player's gaze, so their positions are corrected with Player-gaze offsets.
-- Top right: the tablet screen recording.
+- Top right: the tablet screen recording, with gaze mapped onto it through the bezel AprilTags
+  (`<pid>_gaze_screen.csv` from `scripts/screen_mapping.py`; drawn for the default recorded, corrected gaze).
+  Each output frame shows the gaze samples of the world frame shown on the left.
 - Middle strip: time from chart onset, current slide, pen up/down (annotation strokes), and each
   eye's % change from its fixation-cross baseline plus their mean.
 - Bottom: the same pupil trace as `<pid>_pupil_dilation.png` (2D diameter, 50 ms bins, mean of
@@ -59,7 +61,7 @@ BIN_S, PEAK_SMOOTH_S = 0.05, 0.25  # same as task_pupil_dilation.py
 TOP_H = 720  # height of the two video panels
 STRIP_H = 110
 PLOT_H = 340
-SCREEN_CONTENT = 0.84  # fraction of the screen recording's height above the black letterbox
+SCREEN_CONTENT_WH = (2386, 1668)  # screen-recording px above the black letterbox (measured: first black row 1668)
 EYE_LABEL = {0: "eye0 (right)", 1: "eye1 (left)"}
 COLORS_BGR = {0: (180, 119, 31), 1: (14, 127, 255), "mean": (0, 0, 0)}  # matplotlib C0, C1, black
 
@@ -67,7 +69,7 @@ COLORS_BGR = {0: (180, 119, 31), 1: (14, 127, 255), "mean": (0, 0, 0)}  # matplo
 def screen_frames(video: Path, start_s: float, n: int, size: tuple[int, int]) -> np.ndarray:
     """`n` frames of the screen recording at 60 fps from `start_s`, letterbox cropped, resized to `size`."""
     w, h = size
-    vf = f"fps={FPS},crop=iw:ih*{SCREEN_CONTENT}:0:0,scale={w}:{h}"
+    vf = f"fps={FPS},crop={SCREEN_CONTENT_WH[0]}:{SCREEN_CONTENT_WH[1]}:0:0,scale={w}:{h}"
     cmd = ["ffmpeg", "-v", "error", "-ss", f"{max(start_s, 0):.4f}", "-i", str(video), "-an", "-vf", vf]
     cmd += ["-frames:v", str(n), "-pix_fmt", "bgr24", "-f", "rawvideo", "-"]
     raw = subprocess.run(cmd, capture_output=True, check=True).stdout
@@ -75,6 +77,13 @@ def screen_frames(video: Path, start_s: float, n: int, size: tuple[int, int]) ->
     if len(frames) < n:  # past the end of the recording: pad with black
         frames = np.concatenate([frames, np.zeros((n - len(frames), h, w, 3), np.uint8)])
     return frames
+
+
+def draw_screen_gaze(img, xs: np.ndarray, ys: np.ndarray) -> None:
+    """Gaze mapped onto the screen recording (panel px): samples as green dots, their mean as a red ring."""
+    for x, y in zip(xs, ys):
+        cv2.circle(img, (int(x), int(y)), 3, (0, 200, 0), -1)
+    cv2.circle(img, (int(xs.mean()), int(ys.mean())), 14, (0, 0, 255), 2)
 
 
 def world_frames(rec: Path, frame_idx: np.ndarray) -> dict[int, np.ndarray]:
@@ -258,7 +267,18 @@ def main() -> None:
     print(f"reading {len(np.unique(w_idx))} world frames ...")
     world = world_frames(rec, w_idx)
 
-    screen_w = round(2386 / (1964 * SCREEN_CONTENT) * TOP_H / 2) * 2
+    screen_w = round(SCREEN_CONTENT_WH[0] / SCREEN_CONTENT_WH[1] * TOP_H / 2) * 2
+    screen_scale = TOP_H / SCREEN_CONTENT_WH[1]
+    # gaze on the screen panel: mapped by screen_mapping.py (recorded gaze, offset-corrected)
+    screen_gaze_path = pdir / f"{pid}_gaze_screen.csv"
+    screen_by_frame: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    if args.gaze == "recorded" and not args.no_gaze_correction and screen_gaze_path.exists():
+        sg = pd.read_csv(screen_gaze_path).dropna(subset=["sx"])
+        sg = sg[sg.frame.isin(w_idx)]
+        screen_by_frame = {int(f): (g.sx.to_numpy() * screen_scale, g.sy.to_numpy() * screen_scale)
+                           for f, g in sg.groupby("frame")}  # fmt: skip
+    else:
+        print(f"no gaze on the screen panel (needs {screen_gaze_path.name} and recorded, corrected gaze)")
     print("reading screen recording ...")
     screen = screen_frames(pdir / f"{pid}_screen.mov", t_start - world_lag + screen_off, len(T), (screen_w, TOP_H))
 
@@ -287,9 +307,13 @@ def main() -> None:
                 put(wf, f"#{f.id}", (c[0] + 38, c[1] - 20), 0.7, (0, 230, 255))
             draw_fixation_list(wf, fixations, t, row.task_start)
             frame[:TOP_H, :1280] = wf
-            frame[:TOP_H, 1280:] = screen[i]
+            sf = screen[i].copy()
+            if int(w_idx[i]) in screen_by_frame:
+                draw_screen_gaze(sf, *screen_by_frame[int(w_idx[i])])
+            frame[:TOP_H, 1280:] = sf
             boxed_label(frame, f"world camera + {gaze_note}  (frame {w_idx[i]})", (12, 30))
-            boxed_label(frame, "tablet screen recording", (1292, TOP_H - 16))
+            boxed_label(frame, "tablet screen recording" + (" + mapped gaze" if screen_by_frame else ""),
+                        (1292, TOP_H - 16))
 
             # status strip
             y0 = TOP_H
@@ -369,7 +393,8 @@ def main() -> None:
                           "baseline": "mean over the fixation cross, per eye"},
                 "gaze_min_confidence_drawn": 0.6,
                 "gaze_min_confidence_for_offsets": 0.8,
-                "screen_crop_top_fraction": SCREEN_CONTENT,
+                "screen_content_px": SCREEN_CONTENT_WH,
+                "screen_gaze": str(screen_gaze_path) if screen_by_frame else None,
                 "eye_labels": EYE_LABEL,
             },
             "sync_params": sync_params,
