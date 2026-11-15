@@ -57,30 +57,61 @@ def task_windows(timeline: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# Column order of the plot grid: related tasks side by side. Tasks not listed go at the end.
+TASK_ORDER = ["value", "value-relative", "value-absolute", "comparisons", "comparisons-relative", "trends",
+              "extremum", "range"]  # fmt: skip
+
+
 def plot(pupil: pd.DataFrame, result: pd.DataFrame):
-    """Per task: each eye's % change from its baseline over fixation cross + task, with the mean and peak."""
-    fig, axes = plt.subplots(3, 6, figsize=(20, 9), sharey=True)
+    """Grid of rows = chart type (presentation order), columns = task (same task in every row).
+
+    Each cell: each eye's % change from its baseline over fixation cross + task, with the mean and
+    peak. Cells for a task that chart type didn't have are left empty.
+    """
+    present = list(result.task.unique())
+    tasks = [t for t in TASK_ORDER if t in present] + [t for t in present if t not in TASK_ORDER]
+    blocks = result.drop_duplicates("block_index").sort_values("block_index").block.tolist()
+    fig, axes = plt.subplots(len(blocks), len(tasks), figsize=(3.2 * len(tasks), 3 * len(blocks)), sharey=True)
+    axes = axes.reshape(len(blocks), len(tasks))
+    for j, task in enumerate(tasks):
+        axes[0, j].set_title(task, fontsize=11, fontweight="bold")
+    for i, block in enumerate(blocks):
+        axes[i, 0].set_ylabel(f"$\\bf{{{block}}}$\n% change from baseline", fontsize=9)
     for ax in axes.flat:
-        ax.set_visible(False)
-    for i, (_, block) in enumerate(result.groupby("block_index")):
-        for j, r in enumerate(block.to_dict("records")):
-            ax = axes[i, j]
-            ax.set_visible(True)
-            base = pd.Series({0: r["baseline_eye0_px"], 1: r["baseline_eye1_px"]})
-            tr = binned_trace(pupil, r["baseline_start"], r["task_end"], 0.05, "diameter_px")
-            tr = 100 * tr.sub(base, axis=1).div(base, axis=1)
-            t = tr.index + (r["baseline_start"] - r["task_start"])
-            for eye in (0, 1):
-                if eye in tr:
-                    ax.plot(t, tr[eye], lw=0.6, alpha=0.6, label=f"eye{eye}")
-            ax.axvline(0, color="k", lw=0.8)
-            ax.axhline(0, color="grey", lw=0.5)
-            ax.hlines(r["mean_change_pct"], 0, r["task_duration_s"], color="C3", label="task mean")
-            ax.plot(r["peak_time_s"], r["peak_dilation_pct"], "v", color="C3", label="peak")
-            ax.set_title(f"{r['block']} / {r['task']}", fontsize=9)
-    axes[0, 0].legend(fontsize=7)
+        ax.set_xticks([])
+        ax.text(0.5, 0.5, "not in block", transform=ax.transAxes, ha="center", va="center", color="0.6", fontsize=8)
+        for side in ax.spines.values():
+            side.set_color("0.85")
+    for r in result.to_dict("records"):
+        ax = axes[blocks.index(r["block"]), tasks.index(r["task"])]
+        ax.texts[0].remove()
+        ax.set_xticks([-5, 0, 5, 10, 15, 20, 25])
+        ax.set_xlim(r["baseline_start"] - r["task_start"], r["task_duration_s"])
+        for side in ax.spines.values():
+            side.set_color("black")
+        base = pd.Series({0: r["baseline_eye0_px"], 1: r["baseline_eye1_px"]})
+        tr = binned_trace(pupil, r["baseline_start"], r["task_end"], 0.05, "diameter_px")
+        tr = 100 * tr.sub(base, axis=1).div(base, axis=1)
+        t = tr.index + (r["baseline_start"] - r["task_start"])
+        for eye in (0, 1):
+            if eye in tr:
+                ax.plot(t, tr[eye], lw=0.6, alpha=0.6, label=f"eye{eye}")
+        ax.axvline(0, color="k", lw=0.8)
+        ax.axhline(0, color="grey", lw=0.5)
+        ax.hlines(r["mean_change_pct"], 0, r["task_duration_s"], color="C3", label="task mean")
+        ax.plot(r["peak_time_s"], r["peak_dilation_pct"], "v", color="C3", label="peak")
+        ax.text(0.98, 0.04, f"mean {r['mean_change_pct']:+.1f}%  peak {r['peak_dilation_pct']:+.1f}%",
+                transform=ax.transAxes, ha="right", fontsize=7)  # fmt: skip
+    # legend goes in an empty cell if there is one, otherwise on the first task
+    first = result.iloc[0]
+    handles, labels = axes[blocks.index(first.block), tasks.index(first.task)].get_legend_handles_labels()
+    empty = [ax for ax in axes.flat if ax.texts and ax.texts[0].get_text() == "not in block"]
+    if empty:
+        empty[0].legend(handles, labels, fontsize=8, loc="upper center", frameon=False)
+    else:
+        axes[0, 0].legend(handles, labels, fontsize=7, loc="upper left")
     fig.supxlabel("s from chart onset (negative = fixation cross)")
-    fig.supylabel("2D diameter, % change from baseline")
+    fig.suptitle("2D pupil diameter, % change from each eye's fixation-cross baseline", fontsize=12)
     fig.tight_layout()
     return fig
 
