@@ -76,11 +76,12 @@ def task_windows(timeline: pd.DataFrame) -> pd.DataFrame:
 TASK_ORDER = ["value", "comparisons", "trends", "extremum", "range"]
 
 
-def plot(pupil: pd.DataFrame, result: pd.DataFrame):
+def plot(pupil: pd.DataFrame, result: pd.DataFrame, timeline: pd.DataFrame):
     """Grid of rows = chart type (presentation order), columns = task (same task in every row).
 
-    Each cell: each eye's % change from its baseline over fixation cross + task, with the mean and
-    peak. Cells for a task that chart type didn't have are left empty.
+    Each cell: each eye's % change from its baseline over fixation cross + task, the mean of the
+    eyes, the task mean and peak, and the annotation strokes (pen down -> pen up) as shaded bands
+    (hatched if the stroke was later erased). Cells for a task that chart type didn't have are left empty.
     """
     present = list(result.task.unique())
     tasks = [t for t in TASK_ORDER if t in present] + [t for t in present if t not in TASK_ORDER]
@@ -116,6 +117,22 @@ def plot(pupil: pd.DataFrame, result: pd.DataFrame):
                 ax.plot(t, tr[eye], lw=0.5, alpha=0.35, color=color, label=f"eye{eye}" if first else None)
             ax.plot(t, avg, lw=1.3, color="k", label="mean of eyes" if first else None)
         ax.axvline(0, color="k", lw=0.8)
+        strokes = timeline[
+            (timeline.event == "annotation_stroke")
+            & (timeline.block == r["block"])
+            & (timeline.task == r["source_task"])
+        ]
+        for s in strokes.to_dict("records"):
+            kept = s["kept"] in (True, "True")
+            ax.axvspan(
+                s["start_pupil_s"] - r["task_start"],
+                s["end_pupil_s"] - r["task_start"],
+                facecolor=(0.17, 0.63, 0.17, 0.3 if kept else 0.12),  # C2, translucent
+                edgecolor="darkgreen",  # outline marks pen down / pen up of each stroke
+                hatch=None if kept else "///",
+                lw=0.6,
+                label="annotation stroke" if kept else "erased stroke",
+            )
         ax.axhline(0, color="grey", lw=0.5)
         ax.hlines(r["mean_change_pct"], 0, r["task_duration_s"], color="C3", label="task mean")
         ax.plot(r["peak_time_s"], r["peak_dilation_pct"], "v", color="C3", label="peak")
@@ -123,9 +140,16 @@ def plot(pupil: pd.DataFrame, result: pd.DataFrame):
                 transform=ax.transAxes, ha="right", fontsize=7)  # fmt: skip
     # legend goes in an empty cell if there is one, otherwise on the first task
     first = result.iloc[0]
-    handles, labels = axes[blocks.index(first.block), tasks.index(first.task)].get_legend_handles_labels()
+    first_ax = axes[blocks.index(first.block), tasks.index(first.task)]
+    handles, labels = [], []
+    for ax in [first_ax, *axes.flat]:  # one entry per label; strokes come from whichever cells have them
+        for h, label in zip(*ax.get_legend_handles_labels()):
+            if label not in labels:
+                handles.append(h)
+                labels.append(label)
     empty = [ax for ax in axes.flat if ax.texts and ax.texts[0].get_text() == "not in block"]
     if empty:
+        empty[0].texts[0].set_position((0.5, 0.12))  # keep "not in block" clear of the legend
         empty[0].legend(handles, labels, fontsize=8, loc="upper center", frameon=False)
     else:
         axes[0, 0].legend(handles, labels, fontsize=7, loc="upper left")
@@ -154,7 +178,7 @@ def main() -> None:
     result = pd.concat([result, ref[keep]], axis=1)
     out = pdir / f"{pid}_pupil_dilation.csv"
     result.to_csv(out, index=False)
-    plot(px, result).savefig(pdir / f"{pid}_pupil_dilation.png", dpi=110)
+    plot(px, result, timeline).savefig(pdir / f"{pid}_pupil_dilation.png", dpi=110)
 
     cols = ["block", "task", "baseline_eye0_px", "baseline_eye1_px", "mean_change_px", "mean_change_pct",
             "peak_dilation_px", "peak_dilation_pct", "peak_time_s", "task_coverage", "mm3d_mean_change_pct"]  # fmt: skip
