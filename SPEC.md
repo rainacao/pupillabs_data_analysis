@@ -42,3 +42,27 @@ Built by `uv run python scripts/event_timeline.py recordings/<pid>`. There is on
 - `calibration` / pre-study `validation`: from Pupil Capture.
 
 Each row has start/end on every clock, plus `in_recording`.
+
+## Pupil dilation per task (`scripts/task_pupil_dilation.py`)
+
+Output: `<pid>_pupil_dilation.csv`, one row per task.
+- **Baseline:** for each eye separately, the mean diameter over the task's 5 s fixation cross
+  (cross shown → hidden).
+- **Task mean change:** mean over the chart slide minus the baseline, in px and in %. The eye-combined
+  % change is the mean of the per-eye % changes.
+- **Peak dilation:** the maximum of the eye-averaged % change, computed on 50 ms median bins and
+  smoothed with a 250 ms rolling mean. `peak_time_s` is measured from chart onset.
+
+Measure: the **2D** diameter (pupil-ellipse major axis, eye-camera px) is primary. pye3d's 3D diameter
+(mm) is kept as `mm3d_*` columns for reference.
+- On p1, eye0's 3D model refit repeatedly: its eyeball-centre estimate ranged 29–55 mm from the camera,
+  which caused step artifacts.
+- The two eyes agree better in 2D: median within-trial correlation r = 0.70 (2D) vs 0.44 (3D), and median
+  RMS difference 6.1% vs 12.2% of baseline.
+- The 3D loader's 1.5 mm floor would have cut 24% of eye0's valid samples, so this script uses a
+  0.5 mm floor.
+
+Interpretation caveats:
+- The white chart panel is brighter than the grey fixation screen. Every task starts with a light-reflex
+  constriction (−20 to −35% within ~1 s), so task-mean changes mix brightness with cognitive load.
+- A peak in the first ~0.5 s is baseline carry-over from before the reflex, not a dilation.
