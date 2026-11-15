@@ -95,3 +95,12 @@ Convention: eye0 = right eye, eye1 = left eye.
   Player's exported blinks (`exports/*/blinks.csv`). No filtering of our own.
 - Both versions drop 2D diameters wider than the eye-camera image (192 px). That is physically impossible:
   on p1, one eye0 sample was 1.1e10 px with confidence 0.99.
+
+### Gaze offset correction (`pupil_analysis/gaze.py`)
+
+Gaze is checked against Pupil Capture's 4 validations (marker position in the world image vs gaze), on p1:
+- Pupil Player's post-hoc gaze is 29–109 px below the markers, and gets worse and noisier over the session.
+- Pupil Capture's recorded gaze is 11–27 px below.
+
+`sync_video.py` therefore draws recorded gaze by default, minus the validation offset interpolated in time.
+Player's exported fixations are corrected with the Player-gaze offsets, since they were detected on that gaze.

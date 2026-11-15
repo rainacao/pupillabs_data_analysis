@@ -7,7 +7,13 @@ Writes `<participant>/videos/<pid>_<block>-<task>_sync.mp4` (60 fps, Pupil-time 
 the task's fixation cross through the end of the chart, plus `--pad` seconds each side.
 
 Layout:
-- Top left: world camera, with the gaze samples of each frame (green) and their mean (red ring).
+- Top left: world camera, with the gaze samples of each frame (green) and their mean (red ring),
+  the current fixation (yellow ring, numbered), and a running list of the latest fixations.
+  Gaze is Pupil Capture's recorded gaze by default (`--gaze player` for Pupil Player's post-hoc
+  mapping). Both are corrected for the offset measured at the Pupil Capture validations,
+  interpolated in time (see `pupil_analysis.gaze`); `--no-gaze-correction` turns that off.
+  Fixations come from the newest Pupil Player export (`exports/*/fixations.csv`). They were detected
+  on Player's gaze, so their positions are corrected with Player-gaze offsets.
 - Top right: the tablet screen recording.
 - Middle strip: time from chart onset, current slide, pen up/down (annotation strokes), and each
   eye's % change from its fixation-cross baseline plus their mean.
@@ -38,7 +44,8 @@ import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-from pupil_analysis.io import load_frame_lookup, load_gaze, player_gaze_path
+from pupil_analysis.gaze import correct_gaze, validation_offsets
+from pupil_analysis.io import load_frame_lookup, load_gaze
 from pupil_analysis.pupil import binned_trace, load_pupil_diameter
 from pupil_analysis.video import draw_gaze
 
@@ -140,6 +147,40 @@ def put(img, text, org, scale=0.8, color=(0, 0, 0), thick=2):
     cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
 
 
+def load_fixations(rec: Path) -> pd.DataFrame:
+    """Pupil Player's exported fixations: `id`, `start`, `end` (Pupil s), `duration_ms`, `x`, `y` (norm_pos)."""
+    exports = sorted(rec.glob("exports/*/fixations.csv"))
+    if not exports:
+        raise FileNotFoundError(f"no fixations.csv in {rec}/exports; export with Player's fixation detector on")
+    f = pd.read_csv(exports[-1])
+    return pd.DataFrame(
+        {
+            "id": f.id,
+            "start": f.start_timestamp,
+            "end": f.start_timestamp + f.duration / 1000,
+            "duration_ms": f.duration,
+            "timestamp": f.start_timestamp,
+            "x": f.norm_pos_x,
+            "y": f.norm_pos_y,
+        }
+    )
+
+
+def draw_fixation_list(img, fixations: pd.DataFrame, t: float, onset: float, n: int = 8) -> None:
+    """Box with the latest `n` fixations started by `t`; the ongoing one in yellow."""
+    started = fixations[fixations.start <= t].tail(n)
+    x0, y0, w, line_h = 1280 - 330, 50, 318, 26
+    h = 34 + line_h * max(len(started), 1)
+    roi = img[y0 : y0 + h, x0 : x0 + w]
+    roi[:] = (roi * 0.35).astype(np.uint8)  # darken behind the text
+    put(img, "fixations (start, duration)", (x0 + 10, y0 + 24), 0.6, (255, 255, 255), 1)
+    for k, f in enumerate(started.itertuples()):
+        ongoing = f.end > t
+        color = (0, 230, 255) if ongoing else (220, 220, 220)
+        txt = f"#{f.id:<4} {f.start - onset:+6.2f} s  {f.duration_ms:4.0f} ms" + ("  <" if ongoing else "")
+        put(img, txt, (x0 + 10, y0 + 34 + line_h * (k + 1) - 6), 0.6, color, 2 if ongoing else 1)
+
+
 def boxed_label(img, text, org):
     """White text on a dark box, readable over any video content."""
     (w, h), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
@@ -154,6 +195,8 @@ def main() -> None:
     ap.add_argument("block", help="chart type, e.g. area")
     ap.add_argument("task", help="task name as in the study, e.g. trends or value-absolute")
     ap.add_argument("--pad", type=float, default=1.0, help="seconds before the cross and after the chart")
+    ap.add_argument("--gaze", choices=["recorded", "player"], default="recorded", help="gaze source to draw")
+    ap.add_argument("--no-gaze-correction", action="store_true", help="draw gaze without the validation offset")
     args = ap.parse_args()
     pdir: Path = args.participant_dir
     pid = pdir.name
@@ -177,7 +220,17 @@ def main() -> None:
 
     world_ts = load_frame_lookup(rec).timestamp.to_numpy()
     w_idx = np.clip(np.searchsorted(world_ts, T, side="right") - 1, 0, len(world_ts) - 1)
-    gaze = load_gaze(rec, source="player" if player_gaze_path(rec) else "recorded")
+    gaze = load_gaze(rec, source=args.gaze)
+    fixations = load_fixations(rec)
+    if not args.no_gaze_correction:
+        offsets = {name: validation_offsets(rec, load_gaze(rec, min_confidence=0.8, source=name))
+                   for name in {args.gaze, "player"}}  # fmt: skip
+        for name, off in offsets.items():
+            px = [(round(dx * 1280), round(dy * 720)) for dx, dy in zip(off.dx, off.dy)]
+            print(f"{name} gaze offset at validations (dx, dy px; +y = up): {px}")
+        gaze = correct_gaze(gaze, offsets[args.gaze])
+        fixations = correct_gaze(fixations, offsets["player"])  # detected on Player's gaze
+    gaze_note = f"{args.gaze} gaze" + ("" if args.no_gaze_correction else ", offset-corrected")
     by_frame = {f: (g.x.to_numpy(), g.y.to_numpy()) for f, g in gaze[gaze.frame.isin(w_idx)].groupby("frame")}
     print(f"reading {len(np.unique(w_idx))} world frames ...")
     world = world_frames(rec, w_idx)
@@ -204,9 +257,15 @@ def main() -> None:
             wf = wf.copy() if wf is not None else np.full((720, 1280, 3), 128, np.uint8)
             if int(w_idx[i]) in by_frame:
                 draw_gaze(wf, *by_frame[int(w_idx[i])])
+            cur = fixations[(fixations.start <= t) & (fixations.end > t)]
+            for f in cur.itertuples():
+                c = (int(f.x * 1280), int((1 - f.y) * 720))
+                cv2.circle(wf, c, 34, (0, 230, 255), 3)
+                put(wf, f"#{f.id}", (c[0] + 38, c[1] - 20), 0.7, (0, 230, 255))
+            draw_fixation_list(wf, fixations, t, row.task_start)
             frame[:TOP_H, :1280] = wf
             frame[:TOP_H, 1280:] = screen[i]
-            boxed_label(frame, f"world camera + gaze  (frame {w_idx[i]})", (12, 30))
+            boxed_label(frame, f"world camera + {gaze_note}  (frame {w_idx[i]})", (12, 30))
             boxed_label(frame, "tablet screen recording", (1292, TOP_H - 16))
 
             # status strip
