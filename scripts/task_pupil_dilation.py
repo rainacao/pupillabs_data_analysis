@@ -29,6 +29,8 @@ from pupil_analysis.pupil import binned_trace, load_pupil_diameter, window_dilat
 # eye0's samples. Keep only a gross-error floor; blinks are removed by confidence + `clean_eye`.
 VALID_MM = (0.5, 9.0)
 MIN_CONFIDENCE = 0.8
+BIN_S = 0.05  # trace bins (median per eye)
+PEAK_SMOOTH_S = 0.25  # rolling mean before taking the peak
 
 # Task selection, so the same task lines up across chart types.
 # Stackarea's absolute-value question counts as "value"; its relative variants are not analysed.
@@ -102,12 +104,17 @@ def plot(pupil: pd.DataFrame, result: pd.DataFrame):
         for side in ax.spines.values():
             side.set_color("black")
         base = pd.Series({0: r["baseline_eye0_px"], 1: r["baseline_eye1_px"]})
-        tr = binned_trace(pupil, r["baseline_start"], r["task_end"], 0.05, "diameter_px")
-        tr = 100 * tr.sub(base, axis=1).div(base, axis=1)
-        t = tr.index + (r["baseline_start"] - r["task_start"])
-        for eye in (0, 1):
-            if eye in tr:
-                ax.plot(t, tr[eye], lw=0.6, alpha=0.6, label=f"eye{eye}")
+        # binned from the cross onset and from the chart onset separately, so the chart part
+        # uses the same bins as window_dilation and the peak marker sits on the average line
+        for t0, t1 in ((r["baseline_start"], r["task_start"]), (r["task_start"], r["task_end"])):
+            tr = binned_trace(pupil, t0, t1, BIN_S, "diameter_px").reindex(columns=[0, 1])
+            tr = 100 * tr.sub(base, axis=1).div(base, axis=1)
+            t = tr.index + BIN_S / 2 + (t0 - r["task_start"])  # bin centres, s from chart onset
+            avg = tr.mean(axis=1).rolling(round(PEAK_SMOOTH_S / BIN_S), center=True, min_periods=1).mean()
+            first = t0 == r["baseline_start"]
+            for eye, color in ((0, "C0"), (1, "C1")):
+                ax.plot(t, tr[eye], lw=0.5, alpha=0.35, color=color, label=f"eye{eye}" if first else None)
+            ax.plot(t, avg, lw=1.3, color="k", label="mean of eyes" if first else None)
         ax.axvline(0, color="k", lw=0.8)
         ax.axhline(0, color="grey", lw=0.5)
         ax.hlines(r["mean_change_pct"], 0, r["task_duration_s"], color="C3", label="task mean")
@@ -140,8 +147,8 @@ def main() -> None:
     windows = task_windows(timeline)
     px = load_pupil_diameter(rec, min_confidence=MIN_CONFIDENCE, measure="2d")
     mm = load_pupil_diameter(rec, min_confidence=MIN_CONFIDENCE, valid_mm=VALID_MM, measure="3d")
-    result = window_dilation(px, windows, col="diameter_px")
-    ref = window_dilation(mm, windows, col="diameter_mm", prefix="mm3d_")
+    result = window_dilation(px, windows, col="diameter_px", bin_s=BIN_S, peak_smooth_s=PEAK_SMOOTH_S)
+    ref = window_dilation(mm, windows, col="diameter_mm", bin_s=BIN_S, peak_smooth_s=PEAK_SMOOTH_S, prefix="mm3d_")
     keep = ["mm3d_baseline_eye0_mm", "mm3d_baseline_eye1_mm", "mm3d_mean_change_mm", "mm3d_mean_change_pct",
             "mm3d_peak_dilation_mm", "mm3d_peak_dilation_pct", "mm3d_peak_time_s"]  # fmt: skip
     result = pd.concat([result, ref[keep]], axis=1)
