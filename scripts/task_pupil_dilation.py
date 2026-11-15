@@ -128,9 +128,9 @@ def plot(pupil: pd.DataFrame, result: pd.DataFrame, timeline: pd.DataFrame):
                 s["start_pupil_s"] - r["task_start"],
                 s["end_pupil_s"] - r["task_start"],
                 facecolor=(0.17, 0.63, 0.17, 0.3 if kept else 0.12),  # C2, translucent
-                edgecolor="darkgreen",  # outline marks pen down / pen up of each stroke
+                edgecolor="none" if kept else (0.17, 0.63, 0.17, 0.3),  # no outline; hatch colour if erased
                 hatch=None if kept else "///",
-                lw=0.6,
+                lw=0,
                 label="annotation stroke" if kept else "erased stroke",
             )
         ax.axhline(0, color="grey", lw=0.5)
