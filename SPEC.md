@@ -72,3 +72,19 @@ Interpretation caveats:
 - The white chart panel is brighter than the grey fixation screen. Every task starts with a light-reflex
   constriction (−20 to −35% within ~1 s), so task-mean changes mix brightness with cognitive load.
 - A peak in the first ~0.5 s is baseline carry-over from before the reflex, not a dilation.
+
+## Synced task video (`scripts/sync_video.py`)
+
+`uv run python scripts/sync_video.py recordings/<pid> <block> <task>` writes
+`videos/<pid>_<block>-<task>_sync.mp4` at 60 fps on a Pupil-time grid. It shows:
+- the world camera with gaze overlaid;
+- the tablet screen recording;
+- a status strip: time from chart onset, current slide, pen up/down, and right/left/mean pupil % change;
+- the dilation trace with a moving cursor.
+
+Alignment:
+- The screen recording is delayed by the measured world-camera lag (98 ms on p1), so both video panels
+  change slides together. On p1 area/trends this was checked to within 1 frame at chart onset and end.
+- The pupil trace and stroke indicator use the timeline's times unchanged.
+
+Convention: eye0 = right eye, eye1 = left eye.

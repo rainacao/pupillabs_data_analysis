@@ -1,0 +1,244 @@
+"""Side-by-side video for one task: world camera + gaze, tablet screen recording, and the pupil trace.
+
+    uv run python scripts/sync_video.py recordings/p1 area trends
+    uv run python scripts/sync_video.py recordings/p1 stackarea value-absolute --pad 2
+
+Writes `<participant>/videos/<pid>_<block>-<task>_sync.mp4` (60 fps, Pupil-time grid), covering
+the task's fixation cross through the end of the chart, plus `--pad` seconds each side.
+
+Layout:
+- Top left: world camera, with the gaze samples of each frame (green) and their mean (red ring).
+- Top right: the tablet screen recording.
+- Middle strip: time from chart onset, current slide, pen up/down (annotation strokes), and each
+  eye's % change from its fixation-cross baseline plus their mean.
+- Bottom: the same pupil trace as `<pid>_pupil_dilation.png` (2D diameter, 50 ms bins, mean of
+  eyes smoothed 250 ms), with stroke bands and a moving cursor.
+
+Sync: everything is placed on Pupil time.
+- World frames, gaze and pupil data are already in Pupil time.
+- Stroke and slide times come from `<pid>_event_timeline.csv`.
+- The screen recording is placed using the offset in `<pid>_sync_check.csv`, then delayed by the
+  measured world-camera lag (`world_video` offset, ~98 ms on p1). This makes both video panels
+  change slides on the same frame. The pupil trace and stroke indicator are not shifted, so they
+  match the dilation plots and CSV.
+
+Pupil Core's eye0 camera films the right eye and eye1 the left eye.
+"""
+
+import argparse
+import subprocess
+from pathlib import Path
+
+import cv2
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+from pupil_analysis.io import load_frame_lookup, load_gaze, player_gaze_path
+from pupil_analysis.pupil import binned_trace, load_pupil_diameter
+from pupil_analysis.video import draw_gaze
+
+FPS = 60
+BIN_S, PEAK_SMOOTH_S = 0.05, 0.25  # same as task_pupil_dilation.py
+TOP_H = 720  # height of the two video panels
+STRIP_H = 110
+PLOT_H = 340
+SCREEN_CONTENT = 0.84  # fraction of the screen recording's height above the black letterbox
+EYE_LABEL = {0: "eye0 (right)", 1: "eye1 (left)"}
+COLORS_BGR = {0: (180, 119, 31), 1: (14, 127, 255), "mean": (0, 0, 0)}  # matplotlib C0, C1, black
+
+
+def screen_frames(video: Path, start_s: float, n: int, size: tuple[int, int]) -> np.ndarray:
+    """`n` frames of the screen recording at 60 fps from `start_s`, letterbox cropped, resized to `size`."""
+    w, h = size
+    vf = f"fps={FPS},crop=iw:ih*{SCREEN_CONTENT}:0:0,scale={w}:{h}"
+    cmd = ["ffmpeg", "-v", "error", "-ss", f"{max(start_s, 0):.4f}", "-i", str(video), "-an", "-vf", vf]
+    cmd += ["-frames:v", str(n), "-pix_fmt", "bgr24", "-f", "rawvideo", "-"]
+    raw = subprocess.run(cmd, capture_output=True, check=True).stdout
+    frames = np.frombuffer(raw, np.uint8).reshape(-1, h, w, 3)
+    if len(frames) < n:  # past the end of the recording: pad with black
+        frames = np.concatenate([frames, np.zeros((n - len(frames), h, w, 3), np.uint8)])
+    return frames
+
+
+def world_frames(rec: Path, frame_idx: np.ndarray) -> dict[int, np.ndarray]:
+    """The world-video frames with Player index in `frame_idx`, read sequentially (seeking is unreliable)."""
+    video_frame = load_frame_lookup(rec).video_frame.to_numpy()
+    wanted = {int(video_frame[i]): int(i) for i in np.unique(frame_idx) if video_frame[i] >= 0}
+    out = {}
+    cap = cv2.VideoCapture(str(rec / "world.mp4"))
+    try:
+        for v in range(max(wanted) + 1):
+            ok = cap.grab()
+            if not ok:
+                break
+            if v in wanted:
+                out[wanted[v]] = cap.retrieve()[1]
+    finally:
+        cap.release()
+    return out
+
+
+def pupil_series(pupil: pd.DataFrame, row: pd.Series) -> pd.DataFrame:
+    """% change per eye and smoothed mean, binned as in the dilation plot. Index: bin centre, s from chart onset."""
+    base = pd.Series({0: row.baseline_eye0_px, 1: row.baseline_eye1_px})
+    parts = []
+    for t0, t1 in ((row.baseline_start, row.task_start), (row.task_start, row.task_end)):
+        tr = binned_trace(pupil, t0, t1, BIN_S, "diameter_px").reindex(columns=[0, 1])
+        tr = 100 * tr.sub(base, axis=1).div(base, axis=1)
+        tr["mean"] = tr[[0, 1]].mean(axis=1).rolling(round(PEAK_SMOOTH_S / BIN_S), center=True, min_periods=1).mean()
+        tr.index = tr.index + BIN_S / 2 + (t0 - row.task_start)
+        parts.append(tr)
+    return pd.concat(parts)
+
+
+def plot_panel(series, strokes, row, t_range, width):
+    """Static pupil plot as a BGR image, plus a function mapping s-from-onset to pixel x."""
+    dpi = 100
+    fig, ax = plt.subplots(figsize=(width / dpi, PLOT_H / dpi), dpi=dpi)
+    for s in strokes.itertuples():
+        ax.axvspan(s.start_pupil_s - row.task_start, s.end_pupil_s - row.task_start, color="C2", alpha=0.3, lw=0)
+    ax.plot(series.index, series[0], color="C0", lw=0.8, alpha=0.6, label=EYE_LABEL[0])
+    ax.plot(series.index, series[1], color="C1", lw=0.8, alpha=0.6, label=EYE_LABEL[1])
+    ax.plot(series.index, series["mean"], color="k", lw=1.6, label="mean of eyes")
+    ax.axvline(0, color="k", lw=0.8)
+    ax.axhline(0, color="grey", lw=0.5)
+    ax.hlines(row.mean_change_pct, 0, row.task_duration_s, color="C3", label="task mean")
+    ax.plot(row.peak_time_s, row.peak_dilation_pct, "v", color="C3", label="peak")
+    ax.set_xlim(*t_range)
+    ax.set_xlabel("s from chart onset (negative = fixation cross)")
+    ax.set_ylabel("% change from baseline")
+    ax.legend(loc="lower left", fontsize=8, ncol=5, framealpha=0.8)
+    fig.tight_layout()
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()
+    img = cv2.cvtColor(np.asarray(canvas.buffer_rgba()), cv2.COLOR_RGBA2BGR)
+    y_top, y_bot = (img.shape[0] - ax.transData.transform([(0, y) for y in ax.get_ylim()])[:, 1]).astype(int)[::-1]
+
+    def to_x(t: float) -> int:
+        return round(ax.transData.transform((t, 0))[0])
+
+    plt.close(fig)
+    return img, to_x, (y_top, y_bot)
+
+
+def slide_at(t: float, timeline: pd.DataFrame) -> str:
+    names = {"fixation_cross": "Fixation cross (baseline)", "graph": "Chart", "validation": "Validation break"}
+    ev = timeline[timeline.event.isin(names) & (timeline.start_pupil_s <= t) & (timeline.end_pupil_s > t)]
+    if ev.empty:
+        return "between slides"
+    e = ev.iloc[0]
+    label = names[e.event]
+    return f"{label}: {e.block} / {e.task}" if e.event == "graph" else label
+
+
+def put(img, text, org, scale=0.8, color=(0, 0, 0), thick=2):
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+
+
+def boxed_label(img, text, org):
+    """White text on a dark box, readable over any video content."""
+    (w, h), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+    x, y = org
+    cv2.rectangle(img, (x - 6, y - h - 8), (x + w + 6, y + base + 4), (40, 40, 40), -1)
+    put(img, text, org, 0.7, (255, 255, 255))
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("participant_dir", type=Path)
+    ap.add_argument("block", help="chart type, e.g. area")
+    ap.add_argument("task", help="task name as in the study, e.g. trends or value-absolute")
+    ap.add_argument("--pad", type=float, default=1.0, help="seconds before the cross and after the chart")
+    args = ap.parse_args()
+    pdir: Path = args.participant_dir
+    pid = pdir.name
+    rec = next(p.parent for p in pdir.glob("*/info.player.json"))
+    timeline = pd.read_csv(pdir / f"{pid}_event_timeline.csv")
+    dilation = pd.read_csv(pdir / f"{pid}_pupil_dilation.csv")
+    sync = pd.read_csv(pdir / f"{pid}_sync_check.csv").groupby("clock").fitted_offset_s.first()
+    screen_off, world_lag = sync["screen_recording"], sync["world_video"]
+
+    match = dilation[(dilation.block == args.block) & (dilation.source_task == args.task)]
+    if match.empty:
+        raise SystemExit(f"{args.block}/{args.task} not in {pid}_pupil_dilation.csv")
+    row = match.iloc[0]
+    strokes = timeline[
+        (timeline.event == "annotation_stroke") & (timeline.block == args.block) & (timeline.task == args.task)
+    ]
+
+    t_start, t_end = row.baseline_start - args.pad, row.task_end + args.pad
+    T = np.arange(t_start, t_end, 1 / FPS)  # output frame times, Pupil s
+    rel = T - row.task_start
+
+    world_ts = load_frame_lookup(rec).timestamp.to_numpy()
+    w_idx = np.clip(np.searchsorted(world_ts, T, side="right") - 1, 0, len(world_ts) - 1)
+    gaze = load_gaze(rec, source="player" if player_gaze_path(rec) else "recorded")
+    by_frame = {f: (g.x.to_numpy(), g.y.to_numpy()) for f, g in gaze[gaze.frame.isin(w_idx)].groupby("frame")}
+    print(f"reading {len(np.unique(w_idx))} world frames ...")
+    world = world_frames(rec, w_idx)
+
+    screen_w = round(2386 / (1964 * SCREEN_CONTENT) * TOP_H / 2) * 2
+    print("reading screen recording ...")
+    screen = screen_frames(pdir / f"{pid}_screen.mov", t_start - world_lag + screen_off, len(T), (screen_w, TOP_H))
+
+    width = 1280 + screen_w
+    pupil = load_pupil_diameter(rec, measure="2d")
+    series = pupil_series(pupil, row)
+    plot_img, to_x, (y_top, y_bot) = plot_panel(series, strokes, row, (rel[0], rel[-1]), width)
+    plot_img = cv2.resize(plot_img, (width, PLOT_H))
+
+    out_dir = pdir / "videos"
+    out_dir.mkdir(exist_ok=True)
+    out = out_dir / f"{pid}_{args.block}-{args.task}_sync.mp4"
+    writer = cv2.VideoWriter(str(out), cv2.VideoWriter.fourcc(*"avc1"), FPS, (width, TOP_H + STRIP_H + PLOT_H))
+    series_t = series.index.to_numpy()
+    try:
+        for i, (t, r) in enumerate(zip(T, rel)):
+            frame = np.full((TOP_H + STRIP_H + PLOT_H, width, 3), 255, np.uint8)
+            wf = world.get(int(w_idx[i]))
+            wf = wf.copy() if wf is not None else np.full((720, 1280, 3), 128, np.uint8)
+            if int(w_idx[i]) in by_frame:
+                draw_gaze(wf, *by_frame[int(w_idx[i])])
+            frame[:TOP_H, :1280] = wf
+            frame[:TOP_H, 1280:] = screen[i]
+            boxed_label(frame, f"world camera + gaze  (frame {w_idx[i]})", (12, 30))
+            boxed_label(frame, "tablet screen recording", (1292, TOP_H - 16))
+
+            # status strip
+            y0 = TOP_H
+            put(frame, f"t = {r:+6.2f} s from chart onset", (16, y0 + 40), 0.9)
+            put(frame, slide_at(t, timeline), (430, y0 + 40), 0.9)
+            active = strokes[(strokes.start_pupil_s <= t) & (strokes.end_pupil_s > t)]
+            if len(active):
+                cv2.circle(frame, (1150, y0 + 32), 12, (0, 0, 220), -1)
+                put(frame, f"PEN DOWN - stroke {int(active.stroke_n.iloc[0])}", (1172, y0 + 42), 0.9, (0, 0, 220))
+            else:
+                put(frame, f"pen up ({len(strokes)} stroke(s) in this task)", (1150, y0 + 42), 0.7, (120, 120, 120))
+            k = np.searchsorted(series_t, r) - 1
+            vals = series.iloc[k] if 0 <= k < len(series) and abs(series_t[k] - r) <= BIN_S else None
+            x = 16
+            for key, label in ((0, EYE_LABEL[0]), (1, EYE_LABEL[1]), ("mean", "mean of eyes")):
+                v = vals[key] if vals is not None else np.nan
+                txt = f"{label}: {v:+6.1f}%" if np.isfinite(v) else f"{label}:    --  "
+                put(frame, txt, (x, y0 + 88), 0.8, COLORS_BGR[key])
+                x += 330
+            put(frame, "pupil diameter vs fixation-cross baseline (2D, 50 ms bins; mean smoothed 250 ms)",
+                (1010, y0 + 88), 0.55, (90, 90, 90), 1)  # fmt: skip
+
+            # plot + cursor
+            frame[TOP_H + STRIP_H :] = plot_img
+            cx = to_x(r)
+            cv2.line(frame, (cx, TOP_H + STRIP_H + y_top), (cx, TOP_H + STRIP_H + y_bot), (0, 0, 220), 2)
+            writer.write(frame)
+    finally:
+        writer.release()
+    print(f"wrote {out} ({len(T)} frames, {len(T) / FPS:.1f} s)")
+
+
+if __name__ == "__main__":
+    main()
