@@ -88,3 +88,10 @@ Alignment:
 - The pupil trace and stroke indicator use the timeline's times unchanged.
 
 Convention: eye0 = right eye, eye1 = left eye.
+
+### Filter versions
+- Default (`clean_eye`): confidence ≥ 0.8, then speed, trend and island artifact filters.
+- `--cleaning pupil_labs` → `*_plfilter.{csv,png}`: confidence ≥ 0.8, then drop samples inside Pupil
+  Player's exported blinks (`exports/*/blinks.csv`). No filtering of our own.
+- Both versions drop 2D diameters wider than the eye-camera image (192 px). That is physically impossible:
+  on p1, one eye0 sample was 1.1e10 px with confidence 0.99.

@@ -4,7 +4,8 @@
     uv run python scripts/task_pupil_dilation.py recordings/p1
 
 Reads `<pid>_event_timeline.csv` and writes `<pid>_pupil_dilation.csv` (one row per task) and
-`<pid>_pupil_dilation.png` (traces, for checking).
+`<pid>_pupil_dilation.png` (traces, for checking). With `--cleaning pupil_labs`, samples are filtered
+only by confidence and Pupil Player's blink detection, and the outputs get a `_plfilter` suffix.
 
 Primary measure: 2D pupil diameter (ellipse major axis, eye-camera px), reported as px and as %
 change from each eye's own baseline. pye3d's 3D diameter (mm) is included as `mm3d_*` columns for
@@ -29,6 +30,11 @@ from pupil_analysis.pupil import binned_trace, load_pupil_diameter, window_dilat
 # eye0's samples. Keep only a gross-error floor; blinks are removed by confidence + `clean_eye`.
 VALID_MM = (0.5, 9.0)
 MIN_CONFIDENCE = 0.8
+# cleaning mode -> (output file suffix, note for the figure title)
+CLEANING = {
+    "kret": ("", "\nfilter: confidence >= 0.8 + speed/trend/island artifact filter (clean_eye)"),
+    "pupil_labs": ("_plfilter", "\nfilter: confidence >= 0.8 + Pupil Player blink detection only"),
+}
 BIN_S = 0.05  # trace bins (median per eye)
 PEAK_SMOOTH_S = 0.25  # rolling mean before taking the peak
 
@@ -76,7 +82,7 @@ def task_windows(timeline: pd.DataFrame) -> pd.DataFrame:
 TASK_ORDER = ["value", "comparisons", "trends", "extremum", "range"]
 
 
-def plot(pupil: pd.DataFrame, result: pd.DataFrame, timeline: pd.DataFrame):
+def plot(pupil: pd.DataFrame, result: pd.DataFrame, timeline: pd.DataFrame, filter_note: str = ""):
     """Grid of rows = chart type (presentation order), columns = task (same task in every row).
 
     Each cell: each eye's % change from its baseline over fixation cross + task, the mean of the
@@ -154,7 +160,7 @@ def plot(pupil: pd.DataFrame, result: pd.DataFrame, timeline: pd.DataFrame):
     else:
         axes[0, 0].legend(handles, labels, fontsize=7, loc="upper left")
     fig.supxlabel("s from chart onset (negative = fixation cross)")
-    fig.suptitle("2D pupil diameter, % change from each eye's fixation-cross baseline", fontsize=12)
+    fig.suptitle(f"2D pupil diameter, % change from each eye's fixation-cross baseline{filter_note}", fontsize=12)
     fig.tight_layout()
     return fig
 
@@ -162,6 +168,12 @@ def plot(pupil: pd.DataFrame, result: pd.DataFrame, timeline: pd.DataFrame):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("participant_dir", type=Path)
+    ap.add_argument(
+        "--cleaning",
+        choices=CLEANING,
+        default="kret",
+        help="kret: confidence + clean_eye filters (default). pupil_labs: confidence + Pupil Player blinks only",
+    )
     args = ap.parse_args()
     pdir: Path = args.participant_dir
     pid = pdir.name
@@ -169,16 +181,19 @@ def main() -> None:
     timeline = pd.read_csv(pdir / f"{pid}_event_timeline.csv")
 
     windows = task_windows(timeline)
-    px = load_pupil_diameter(rec, min_confidence=MIN_CONFIDENCE, measure="2d")
-    mm = load_pupil_diameter(rec, min_confidence=MIN_CONFIDENCE, valid_mm=VALID_MM, measure="3d")
+    suffix, note = CLEANING[args.cleaning]
+    px = load_pupil_diameter(rec, min_confidence=MIN_CONFIDENCE, measure="2d", cleaning=args.cleaning)
+    mm = load_pupil_diameter(
+        rec, min_confidence=MIN_CONFIDENCE, valid_mm=VALID_MM, measure="3d", cleaning=args.cleaning
+    )
     result = window_dilation(px, windows, col="diameter_px", bin_s=BIN_S, peak_smooth_s=PEAK_SMOOTH_S)
     ref = window_dilation(mm, windows, col="diameter_mm", bin_s=BIN_S, peak_smooth_s=PEAK_SMOOTH_S, prefix="mm3d_")
     keep = ["mm3d_baseline_eye0_mm", "mm3d_baseline_eye1_mm", "mm3d_mean_change_mm", "mm3d_mean_change_pct",
             "mm3d_peak_dilation_mm", "mm3d_peak_dilation_pct", "mm3d_peak_time_s"]  # fmt: skip
     result = pd.concat([result, ref[keep]], axis=1)
-    out = pdir / f"{pid}_pupil_dilation.csv"
+    out = pdir / f"{pid}_pupil_dilation{suffix}.csv"
     result.to_csv(out, index=False)
-    plot(px, result, timeline).savefig(pdir / f"{pid}_pupil_dilation.png", dpi=110)
+    plot(px, result, timeline, note).savefig(pdir / f"{pid}_pupil_dilation{suffix}.png", dpi=110)
 
     cols = ["block", "task", "baseline_eye0_px", "baseline_eye1_px", "mean_change_px", "mean_change_pct",
             "peak_dilation_px", "peak_dilation_pct", "peak_time_s", "task_coverage", "mm3d_mean_change_pct"]  # fmt: skip

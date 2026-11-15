@@ -11,6 +11,7 @@ Frame numbers are Pupil Player's (see `io.load_frame_lookup`).
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pandas as pd
 
@@ -30,6 +31,7 @@ def load_pupil_diameter(
     min_confidence: float = 0.8,
     valid_mm: tuple[float, float] = (1.5, 9.0),
     measure: str = "3d",
+    cleaning: str = "kret",
 ) -> pd.DataFrame:
     """Pupil diameter per sample: columns `timestamp`, `eye`, and `diameter_mm` or `diameter_px`.
 
@@ -37,11 +39,15 @@ def load_pupil_diameter(
     eye model, so it jumps when the model refits. Samples outside `valid_mm` are dropped.
     measure="2d": the pupil ellipse's major axis in eye-camera pixels (`diameter_px`).
     It is model-free, and the major axis is close to the true diameter even when the eye is
-    rotated; `valid_mm` is ignored.
+    rotated; `valid_mm` is ignored. Diameters wider than the eye-camera image are impossible
+    (failed ellipse fits, which can still carry high confidence) and are dropped.
 
     Prefers Pupil Player's post-hoc detection (`offline_data/offline_pupil.pldata`)
     and falls back to Pupil Capture's online `pupil.pldata`. Samples below
-    `min_confidence` (blinks, lost tracking) are dropped, then `clean_eye` runs per eye.
+    `min_confidence` (blinks, lost tracking) are dropped, then:
+    cleaning="kret": `clean_eye` runs per eye (speed + trend + island filters).
+    cleaning="pupil_labs": only samples inside Pupil Player's detected blinks (`load_blinks`) are
+    dropped, so the remaining filtering is entirely Pupil Labs' (confidence + blink detector).
     """
     rec_dir = Path(rec_dir)
     offline = rec_dir / "offline_data" / "offline_pupil.pldata"
@@ -65,10 +71,47 @@ def load_pupil_diameter(
     if measure == "3d":
         keep &= df[col].between(*valid_mm)
     else:
-        keep &= df[col] > 0
+        max_px = {e: eye_image_size(rec_dir, e) for e in df.eye.unique()}
+        keep &= (df[col] > 0) & (df[col] <= df.eye.map(max_px))
     df = df[keep].sort_values("timestamp").reset_index(drop=True)
-    cleaned = [clean_eye(g, col=col) for _, g in df.groupby("eye")]
-    return pd.concat(cleaned).sort_values("timestamp").reset_index(drop=True)
+    if cleaning == "kret":
+        cleaned = [clean_eye(g, col=col) for _, g in df.groupby("eye")]
+        return pd.concat(cleaned).sort_values("timestamp").reset_index(drop=True)
+    if cleaning == "pupil_labs":
+        return df[~in_intervals(df.timestamp.to_numpy(), load_blinks(rec_dir))].reset_index(drop=True)
+    raise ValueError(f"unknown cleaning {cleaning!r}")
+
+
+def eye_image_size(rec_dir: str | Path, eye: int) -> int:
+    """Larger side, in px, of the eye camera's image (from `eye<eye>.mp4`)."""
+    cap = cv2.VideoCapture(str(Path(rec_dir) / f"eye{eye}.mp4"))
+    try:
+        size = max(cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    finally:
+        cap.release()
+    if size <= 0:
+        raise FileNotFoundError(f"cannot read the image size of {rec_dir}/eye{eye}.mp4")
+    return int(size)
+
+
+def load_blinks(rec_dir: str | Path) -> pd.DataFrame:
+    """Blinks from the newest Pupil Player export (`exports/*/blinks.csv`): columns `start`, `end` (Pupil s).
+
+    Only the exported range is covered; see that export's `export_info.csv`.
+    """
+    exports = sorted(Path(rec_dir).glob("exports/*/blinks.csv"))
+    if not exports:
+        raise FileNotFoundError(f"no blinks.csv in {rec_dir}/exports; export with Player's blink detector on")
+    b = pd.read_csv(exports[-1])
+    return pd.DataFrame({"start": b.start_timestamp, "end": b.end_timestamp}).sort_values("start")
+
+
+def in_intervals(t: np.ndarray, intervals: pd.DataFrame) -> np.ndarray:
+    """True where `t` falls inside any [start, end] interval."""
+    inside = np.zeros(len(t), bool)
+    for start, end in zip(intervals.start, intervals.end):
+        inside |= (t >= start) & (t <= end)
+    return inside
 
 
 def _mad_outliers(x: np.ndarray, n_mad: float) -> np.ndarray:
