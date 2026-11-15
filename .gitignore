@@ -1,0 +1,27 @@
+# uv / virtual env
+.venv/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Environment and secrets
+.env
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Project data
+recordings/
+# Participant study exports (contain personal data such as IP addresses)
+annotation_analysis/*.json
