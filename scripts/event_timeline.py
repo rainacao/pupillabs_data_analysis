@@ -16,6 +16,7 @@ import pandas as pd
 
 from pupil_analysis.io import load_frame_lookup
 from pupil_analysis.marks import unix_to_pupil_offset
+from pupil_analysis.provenance import fit_summary, write_record
 from pupil_analysis.timeline import (
     build_timeline,
     chart_transitions,
@@ -79,6 +80,36 @@ def main() -> None:
             f"{name}: offset {off:+.3f} s, matched {len(res)}/{len(r)} transitions, "
             f"residual median {res.median():+.0f} ms, |max| {res.abs().max():.0f} ms"
         )
+
+    write_record(
+        pdir / f"{pid}_sync_params.json",
+        {
+            "inputs": {"recording": rec, "study_json": study, "screen_recording": screen},
+            "unix_to_pupil": {
+                "offset_s": unix_to_pupil,
+                "how": "automatic: info.player.json start_time_synced_s - start_time_system_s "
+                "(browser and Pupil Capture on the same Mac)",
+            },
+            "world_video_lag": {
+                "offset_s": world_lag,
+                "meaning": "world camera sees a slide change this long after reVISit logs it",
+                "how": "automatic: median offset of chart on/off brightness edges in the world video",
+                "fit": fit_summary(world_res.residual_s),
+                "parameters": {"white_fraction_threshold": WORLD_THRESHOLD, "match_tolerance_s": 0.5,
+                               "search_s": 2.0, "smoothing_frames": 5},
+            },
+            "screen_recording": {
+                "offset_s": screen_off,
+                "meaning": "screen-recording time = Pupil time + offset_s",
+                "pupil_time_at_screen_t0": screen_zero,
+                "how": "automatic: median offset of chart on/off brightness edges in the screen recording",
+                "fit": fit_summary(screen_res.residual_s),
+                "parameters": {"white_fraction_threshold": SCREEN_THRESHOLD, "match_tolerance_s": 0.2,
+                               "decode_fps": 60, "crop": "rows 20-80%, columns 25-100%"},
+            },
+            "per_transition_residuals": f"{pid}_sync_check.csv",
+        },
+    )  # fmt: skip
 
     timeline = build_timeline(study, rec, screen_offset_s=screen_zero)
     out = pdir / f"{pid}_event_timeline.csv"

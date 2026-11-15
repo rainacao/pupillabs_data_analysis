@@ -104,3 +104,20 @@ Gaze is checked against Pupil Capture's 4 validations (marker position in the wo
 
 `sync_video.py` therefore draws recorded gaze by default, minus the validation offset interpolated in time.
 Player's exported fixations are corrected with the Player-gaze offsets, since they were detected on that gaze.
+
+## Provenance records (`pupil_analysis/provenance.py`)
+
+Each output that involves shifts gets a JSON record next to it. Every record includes the time it was made,
+the command, and the git commit (with an uncommitted-changes flag).
+- `<pid>_sync_params.json` (from `event_timeline.py`):
+  - the study clock → Pupil time offset;
+  - the world-camera lag and the screen-recording offset, each with its fit quality and detection parameters.
+- `videos/<video>.provenance.json` (from `sync_video.py`):
+  - every shift applied to that video: the screen offset and extra delay;
+  - gaze and fixation corrections, with the offsets per validation and the pixels subtracted during the video;
+  - what was deliberately not shifted;
+  - the hand-set display parameters;
+  - a copy of the sync parameters.
+
+All shifts are measured from the data. Only the parameters behind the measurements are set by hand
+(thresholds, crop, padding, eye-label convention).

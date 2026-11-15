@@ -29,9 +29,13 @@ Sync: everything is placed on Pupil time.
   match the dilation plots and CSV.
 
 Pupil Core's eye0 camera films the right eye and eye1 the left eye.
+
+Every shift applied to a video, the parameters behind it, and the code version are written to
+`<video>.provenance.json` next to it.
 """
 
 import argparse
+import json
 import subprocess
 from pathlib import Path
 
@@ -46,6 +50,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from pupil_analysis.gaze import correct_gaze, validation_offsets
 from pupil_analysis.io import load_frame_lookup, load_gaze
+from pupil_analysis.provenance import write_record
 from pupil_analysis.pupil import binned_trace, load_pupil_diameter
 from pupil_analysis.video import draw_gaze
 
@@ -147,6 +152,23 @@ def put(img, text, org, scale=0.8, color=(0, 0, 0), thick=2):
     cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
 
 
+def offsets_px(off: pd.DataFrame) -> list[dict]:
+    """Validation offsets in world-image pixels (+dy = gaze above the marker)."""
+    return [
+        {"validation_pupil_s": round(t, 3), "dx_px": round(dx * 1280, 1), "dy_px": round(dy * 720, 1), "n": n}
+        for t, dx, dy, n in zip(off.t, off.dx, off.dy, off.n)
+    ]
+
+
+def applied_px(off: pd.DataFrame, times: dict[str, float]) -> dict:
+    """The (interpolated) correction subtracted at each named time, in pixels."""
+    return {
+        name: {"dx_px": round(float(np.interp(t, off.t, off.dx)) * 1280, 1),
+               "dy_px": round(float(np.interp(t, off.t, off.dy)) * 720, 1)}
+        for name, t in times.items()
+    }  # fmt: skip
+
+
 def load_fixations(rec: Path) -> pd.DataFrame:
     """Pupil Player's exported fixations: `id`, `start`, `end` (Pupil s), `duration_ms`, `x`, `y` (norm_pos)."""
     exports = sorted(rec.glob("exports/*/fixations.csv"))
@@ -222,6 +244,7 @@ def main() -> None:
     w_idx = np.clip(np.searchsorted(world_ts, T, side="right") - 1, 0, len(world_ts) - 1)
     gaze = load_gaze(rec, source=args.gaze)
     fixations = load_fixations(rec)
+    offsets: dict[str, pd.DataFrame] = {}
     if not args.no_gaze_correction:
         offsets = {name: validation_offsets(rec, load_gaze(rec, min_confidence=0.8, source=name))
                    for name in {args.gaze, "player"}}  # fmt: skip
@@ -297,6 +320,62 @@ def main() -> None:
     finally:
         writer.release()
     print(f"wrote {out} ({len(T)} frames, {len(T) / FPS:.1f} s)")
+
+    sync_params_path = pdir / f"{pid}_sync_params.json"
+    sync_params = json.loads(sync_params_path.read_text()) if sync_params_path.exists() else None
+    moments = {"video_start": t_start, "chart_onset": row.task_start, "video_end": t_end}
+    gaze_record: dict[str, object] = {"source": args.gaze, "corrected": not args.no_gaze_correction}
+    fix_record: dict[str, object] = {"source": str(max(rec.glob("exports/*/fixations.csv"))),
+                  "corrected": not args.no_gaze_correction}  # fmt: skip
+    if offsets:
+        how = "automatic: median gaze - marker offset at each Pupil Capture validation, linearly interpolated in time"
+        gaze_record |= {"how": how, "validation_offsets": offsets_px(offsets[args.gaze]),
+                        "subtracted_during_video": applied_px(offsets[args.gaze], moments)}  # fmt: skip
+        fix_record |= {"how": how + " (Player-gaze offsets: fixations were detected on Player's gaze)",
+                       "validation_offsets": offsets_px(offsets["player"]),
+                       "subtracted_during_video": applied_px(offsets["player"], moments)}  # fmt: skip
+    record = write_record(
+        out.with_suffix(".provenance.json"),
+        {
+            "video": out,
+            "task": {"block": args.block, "task": args.task, "chart_onset_pupil_s": row.task_start,
+                     "fixation_cross_pupil_s": [row.baseline_start, row.baseline_end],
+                     "chart_end_pupil_s": row.task_end},
+            "window": {"start_pupil_s": t_start, "end_pupil_s": t_end, "pad_s": args.pad, "fps": FPS,
+                       "frames": len(T), "world_frames": [int(w_idx[0]), int(w_idx[-1])]},
+            "shifts_applied": {
+                "screen_recording": {
+                    "screen_time = pupil_time + offset_s": screen_off,
+                    "extra_delay_s": world_lag,
+                    "why_delay": "match the world camera, which sees slide changes this much later than reVISit "
+                    "logs them; both panels then change slides on the same frame",
+                    "screen_time_of_first_frame_s": t_start - world_lag + screen_off,
+                    "how": "automatic: both values fitted in event_timeline.py (see sync_params)",
+                },
+                "gaze": gaze_record,
+                "fixations": fix_record,
+            },
+            "not_shifted": [
+                "world frames, gaze and pupil samples: native Pupil timestamps",
+                (
+                    "pupil trace, stroke bands and PEN DOWN indicator: event-timeline times (reVISit clock "
+                    "converted to Pupil time), not delayed by the world-camera lag, so they match the "
+                    "dilation plots and CSV"
+                ),
+            ],
+            "parameters": {
+                "pupil": {"measure": "2d (ellipse major axis, px)", "cleaning": "kret (clean_eye)",
+                          "min_confidence": 0.8, "bin_s": BIN_S, "mean_smoothing_s": PEAK_SMOOTH_S,
+                          "baseline": "mean over the fixation cross, per eye"},
+                "gaze_min_confidence_drawn": 0.6,
+                "gaze_min_confidence_for_offsets": 0.8,
+                "screen_crop_top_fraction": SCREEN_CONTENT,
+                "eye_labels": EYE_LABEL,
+            },
+            "sync_params": sync_params,
+        },
+    )  # fmt: skip
+    print(f"wrote {record}")
 
 
 if __name__ == "__main__":
