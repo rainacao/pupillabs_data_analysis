@@ -10,6 +10,7 @@ Eye-tracking analysis for the VLAT line/area annotation study (reVISit + Pupil C
 
 Study order: introduction, then three chart-type blocks (stackarea, area, line; latin-square order).
 Each trial is a 5 s fixation cross followed by a chart with a question and a drawing canvas.
+From p2 on, each chart is followed by a NASA-TLX slide (`tlx-<chart>-<task>`), before the next fixation cross.
 Each block ends with a `validation-break`, during which Pupil Capture runs a screen-marker validation.
 
 ## Clocks (`pupil_analysis/timeline.py`)
@@ -25,9 +26,33 @@ Alignment is checked against the videos. Chart slides show a white panel and fix
 so every chart on/off transition from reVISit should show up as a brightness edge in each video.
 `fit_offset` matches the edges and reports per-transition residuals in `<pid>_sync_check.csv`.
 
+World-video threshold:
+- The world-video white-fraction threshold is measured per participant (`transition_threshold`), because
+  camera exposure differs.
+- It is the midpoint of the median fixation-slide level (1.5–0.5 s before chart onsets) and chart-slide level
+  (0.5–1.5 s after).
+  - p1: 0.094 / 0.128 → 0.111. The old fixed value was 0.11. Refitting p1 with the measured threshold moves the
+    lag from 97.7 to 102.4 ms, still 30/30 matched. p1's outputs were made with the fixed 0.11 and have not been rerun.
+  - p2: 0.002 / 0.043 → 0.022. The fixed 0.11 found no edges at all.
+- The screen-recording threshold stays at 0.2: fixation slides are ~0 and charts ≥ 0.38.
+
 p1 results: all 30/30 transitions matched in each video.
 - World video lags reVISit by a constant 98 ms (display + camera latency), max residual 48 ms.
 - Screen-recording residuals are at most 27 ms.
+
+p2 results: 30/30 matched in each video.
+- World lag is 115 ms, max residual 73 ms.
+- Screen-recording max residual is 65 ms.
+
+p3 results: 30/30 matched in each video. World threshold 0.001 / 0.079 → 0.040.
+- World lag is 166 ms, max residual 56 ms.
+- Screen-recording max residual is 41 ms.
+
+Display: p3 (and, from its 3838 x 2160 screen recording, apparently p2) was run on a desktop monitor
+(Sceptre) with Safari full screen, not on the iPad. The AprilTags are on the monitor corners. p1 is the only
+iPad session (2386 x 1964 recording). This affects the screen mapping (below).
+
+The study JSON is found as `VLAT_*.json`. A bare `*.json` glob could pick up `<pid>_sync_params.json` on reruns.
 
 Event times are **not** shifted by the 98 ms lag. They are the times reVISit issued the stimulus.
 
@@ -40,8 +65,23 @@ Built by `uv run python scripts/event_timeline.py recordings/<pid>`. There is on
 - `validation`: the reVISit break slide.
 - `validation_markers`: Pupil Capture's marker sequence within the break slide (from `notify.pldata`).
 - `calibration` / pre-study `validation`: from Pupil Capture.
+- `tlx`: the NASA-TLX slide after a chart (slide shown → submitted). It has the same `block` and `task` as
+  its chart, and the six 0–100 ratings as `tlx_mental_demand`, `tlx_physical_demand`, `tlx_temporal_demand`,
+  `tlx_performance`, `tlx_effort` and `tlx_frustration`.
+  - These are also written to `<pid>_tlx.csv`, one row per chart.
+  - reVISit records no per-slider timestamps, only the slide's start/end and raw mouse `windowEvents`.
+  - The direction of the performance scale (whether 100 means good or failure) is not in the export, so
+    no combined raw-TLX score is computed. This must be checked against the study config.
 
 Each row has start/end on every clock, plus `in_recording`.
+
+### TLX comparison plot (`scripts/tlx_plot.py`)
+
+`uv run python scripts/tlx_plot.py recordings/p2 recordings/p3` writes `recordings/tlx_p2_p3.{png,csv}`.
+- Ratings are read straight from each reVISit JSON, so it doesn't need the Pupil recording or a built timeline.
+- There is one panel per TLX scale. Rows are chart/task pairs, grouped area → stackarea → line, with one marker
+  per participant. Participants are shifted slightly up or down so tied ratings stay visible.
+- All study tasks are shown, including stackarea's `-relative` tasks, because TLX was asked after every chart.
 
 ## Pupil dilation per task (`scripts/task_pupil_dilation.py`)
 
@@ -73,6 +113,31 @@ Interpretation caveats:
   constriction (−20 to −35% within ~1 s), so task-mean changes mix brightness with cognitive load.
 - A peak in the first ~0.5 s is baseline carry-over from before the reflex, not a dilation.
 
+### Data quality (`scripts/pupil_quality.py`)
+
+`<pid>_pupil_quality.csv`: for each task's baseline and chart window, per eye, it records:
+- the sampling rate;
+- the fraction of samples passing confidence;
+- the fraction surviving `clean_eye`, and the fraction surviving Pupil-Labs-only filtering;
+- the fraction of 50 ms bins with data;
+- the number of Player blinks.
+
+Medians over tasks:
+
+| | eye0 conf ok | eye1 conf ok | eye0 bins (clean_eye) | eye1 bins | blinks |
+|---|---|---|---|---|---|
+| p1 baseline / chart | 0.98 / 0.96 | 0.98 / 0.99 | 0.90 / 0.83 | 0.89 / 0.88 | 4.2/min |
+| p2 baseline / chart | 0.35 / 0.51 | 0.96 / 0.98 | 0.28 / 0.57 | 0.78 / 0.86 | 20.9/min (7% of the time) |
+| p3 baseline / chart | 0.76 / 0.89 | 0.92 / 0.84 | 0.65 / 0.65 | 0.77 / 0.64 | 24.2/min (8% of the time) |
+
+p2's data loss is mostly **eye0 (right eye) tracking**, not blinks:
+- The eye0 camera image shows the eye in the bottom-left corner, overexposed, with the pupil near the image edge.
+- Median confidence is 0.83 for eye0 vs 1.00 for eye1.
+- A 21/min blink rate is within the normal range.
+
+In p2's eye-mean trace, eye1 alone stands in for long stretches. Worst eye0 chart-bin coverage:
+area/trends 0.28, area/value 0.29, stackarea/trends 0.33.
+
 ## Synced task video (`scripts/sync_video.py`)
 
 `uv run python scripts/sync_video.py recordings/<pid> <block> <task>` writes
@@ -89,6 +154,28 @@ Alignment:
 
 Convention: eye0 = right eye, eye1 = left eye.
 
+p3 reported squinting. Both eyes lose data, unlike p2's single bad eye.
+- Fraction of samples at or above each confidence floor (task windows, offline pupil detection):
+  - eye0: 0.82 at 0.8, 0.90 at 0.7, 0.91 at 0.6, 0.92 at 0.5, 0.95 at 0.4.
+  - eye1: 0.82, 0.90, 0.91, 0.92, 0.94 at the same floors.
+  - Recorded gaze during charts: 0.87 at 0.8, 0.91 at 0.6, 0.95 at 0.4.
+- Most of p3's loss comes from `clean_eye`, not from confidence: about 0.85 pass confidence, but only about 0.65 survive cleaning.
+- eye0 runs about 10 pp below eye1 during charts. When one eye drops out of a bin, the "mean of eyes" jumps by
+  that gap, so p3's **peaks** are mostly eye-switching artifacts.
+  - Example: line/extremum at 0.6 has a +14.8% peak at 2.9 s, from eye1 alone.
+  - Task means move ≤ 0.6 pp between floors 0.8 and 0.6.
+
+### Confidence floor (`--min-confidence`)
+- `task_pupil_dilation.py --min-confidence 0.6`: writes `<pid>_pupil_dilation_conf60.{csv,png}`. The default 0.8 has no suffix.
+- `sync_video.py --min-confidence 0.6 --gaze-min-confidence 0.4`: reads the matching dilation CSV and writes
+  `videos/<pid>_<block>-<task>_sync_conf60_gaze40.mp4`. The defaults are 0.8 (pupil) and 0.6 (gaze).
+- `screen_mapping.py --min-confidence` (default 0.6): the floor for the mapped gaze.
+- Validation offsets always use gaze with confidence ≥ 0.8.
+- p3 uses pupil 0.6 and gaze 0.4.
+  - 0.6 is where the pupil curve flattens (0.90 → 0.91 from 0.7 to 0.6).
+  - Gaze goes lower than pupil: low-confidence gaze is jittery but unbiased, while a squint-clipped ellipse
+    biases the diameter itself.
+
 ### Filter versions
 - Default (`clean_eye`): confidence ≥ 0.8, then speed, trend and island artifact filters.
 - `--cleaning pupil_labs` → `*_plfilter.{csv,png}`: confidence ≥ 0.8, then drop samples inside Pupil
@@ -104,6 +191,73 @@ Gaze is checked against Pupil Capture's 4 validations (marker position in the wo
 
 `sync_video.py` therefore draws recorded gaze by default, minus the validation offset interpolated in time.
 Player's exported fixations are corrected with the Player-gaze offsets, since they were detected on that gaze.
+
+## Gaze on the screen recording (`scripts/screen_mapping.py`, `pupil_analysis/surface.py`)
+
+`uv run python scripts/screen_mapping.py recordings/<pid>` maps gaze into screen-recording pixels
+(content area 2386 x 1668 px, above the letterbox; measured as the first all-black row).
+
+Method:
+1. **Tags.** AprilTags 4 (top right), 5 (bottom right), 6 (top left) and 7 (bottom left) sit on the tablet bezel.
+   - Pupil Player's detections are filled in with OpenCV's tag36h11 detector (sub-pixel corners), cached in
+     `<pid>_tags_opencv.csv`.
+   - OpenCV corner k = Player corner `[1, 0, 3, 2][k]`, checked on frames where both detect a tag.
+   - On p1, OpenCV adds 12,225 detections. It finds tags in the dark area/line validation frames, where
+     Player finds none.
+2. **Undistortion.** All world points are undistorted with `world.intrinsics` (radial model, k1 = -0.38).
+   OpenCV's default 5 iterations are up to 21 px wrong near the image corners, so the code uses 100.
+3. **Tag model.** A fixed set of 16 tag corners in one plane, from the median over frames that see all 4 tags.
+4. **Display corners.** During the validation markers the screen is all white.
+   - In each such frame with >= 3 tags, the bright quadrilateral's edges are line-fit after undistortion,
+     trimming the rounded corners.
+   - The corners are mapped into the tag plane and median-combined, then sent to the recording's content corners.
+   - The tag model is therefore expressed in screen-recording px.
+   - p1: 399/399 frames; each frame lies within 1.3–2.4 px of the median.
+5. **Per frame.** Camera pose by PnP on the calibrated camera (>= 2 tags; screen px are a metric plane frame).
+   - A free 8-DOF homography (`--method homography`) extrapolates badly when only the two right-hand tags
+     are visible: up to 205 px at the far marker, vs 104 px with the pose.
+6. **Gaze.** Recorded gaze, offset-corrected at the validations, uses the pose of the world frame it falls in.
+   Output: `<pid>_gaze_screen.csv` (`sx`, `sy` in px, top-left origin; `n_tags`, `tags`).
+   p1: 97.1% of samples mapped.
+
+Checks (`<pid>_screen_mapping_check.csv/.png`; summary in `<pid>_screen_mapping.json`):
+- **Geometry only:** Pupil Capture's world-image detection of each validation marker, mapped to the screen,
+  vs the marker centre in the screen recording.
+  - 4 tags visible (stackarea validation): 2–10 px.
+  - Only tags 4+5 (pre-study, area and line validations; dark exposure): 6–42 px, but 95–104 px at the far
+    left marker.
+- **Tag-subset simulation:** on 4-tag chart frames, drop tags and compare with the 4-tag pose
+  (20 display grid points).
+  - 3 tags: median 6–11 px, 95th percentile <= 23 px.
+  - 2 tags: median 6–12 px, 95th percentile <= 46 px.
+  - During charts, 94% of frames have >= 3 tags and 6% have 2.
+- **End to end:** mapped gaze during each fixation cross vs the cross position (1501, 905 px).
+  - Median 37 px, max 81 px (15 crosses).
+  - Since the geometry is ~5 px there, this is mostly the residual gaze-calibration error.
+  - 1 world px is about 4.6 screen px, so this matches the 11–27 world-px validation offsets.
+
+p3 (desktop monitor): the screen mapping fails.
+- The bezel tags are about 25 world px wide. Neither Player nor OpenCV's tag36h11 detector finds any of tags 4–7, and upscaling
+  only produces scattered false IDs.
+- The p3 synced video therefore has no gaze on the screen panel.
+- Mapping the monitor sessions would need their own tag set-up and display corners.
+
+`sync_video.py` measures the screen recording's content area: the last row brighter than 16 in 5 sampled frames.
+This gives 2386 x 1668 on p1, as before, and the full 3838 x 2160 frame on p2/p3.
+
+p3 area/value (pupil 0.6, gaze 0.4):
+- Both panels change slides together.
+- Recorded-gaze validation offsets are 35–51 px left and 7–20 px down, from the area, line and stackarea validations.
+- During the fixation cross, the corrected gaze still sits about 25–30 world px above the cross.
+- Pupil Player's post-hoc gaze is off by 400–780 px at the validations, so its post-hoc calibration is unusable on p3.
+  The Player fixations (and the fixation list in the video) are built on that gaze, so they are suspect for p3.
+- p3 made no annotations: every drawing has 0 elements, so there are no `annotation_stroke` rows.
+
+`sync_video.py` draws this gaze on the screen panel: green samples and a red mean ring, for the world
+frame shown on the left. It now crops the screen recording to exactly 1668 rows. Before, it used 0.84 of 1964 rows,
+which cut the bottom 18 rows of the content.
+
+Not yet done: annotation strokes (canvas coordinates) mapped into screen px, so that gaze and strokes can be compared.
 
 ## Provenance records (`pupil_analysis/provenance.py`)
 

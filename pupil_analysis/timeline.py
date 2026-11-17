@@ -27,6 +27,9 @@ import pandas as pd
 from pupil_analysis.io import load_frame_lookup, load_pldata, timestamps_to_frames
 from pupil_analysis.marks import unix_to_pupil_offset
 
+TLX_SCALES = ["mental-demand", "physical-demand", "temporal-demand", "performance", "effort", "frustration"]
+TLX_COLUMNS = [f"tlx_{s.replace('-', '_')}" for s in TLX_SCALES]
+
 
 def load_answers(study_json: str | Path) -> list[dict]:
     """reVISit answers sorted by start time."""
@@ -38,16 +41,17 @@ def study_events(answers: list[dict]) -> pd.DataFrame:
 
     Events: `fixation_cross` (cross shown -> hidden), `graph` (chart slide shown -> answer
     submitted), `annotation_stroke` (pen down -> pen up; `kept` False if later erased),
-    `validation` (the validation-break slide, start -> end). `block` is the chart type of the
-    block the event belongs to (stackarea/area/line); a validation break belongs to the block
-    it follows. `block_index` counts blocks in presentation order.
+    `validation` (the validation-break slide, start -> end), `tlx` (the NASA-TLX slide after a chart,
+    start -> submit; the six 0-100 ratings as `tlx_<scale>` columns; only in studies that ask it).
+    `block` is the chart type of the block the event belongs to (stackarea/area/line); a validation
+    break belongs to the block it follows. `block_index` counts blocks in presentation order.
     """
     rows = []
     block, block_index = None, 0
     for a in answers:
         name = a["componentName"]
         kind, _, rest = name.partition("-")
-        if kind in ("fixation", "graph"):
+        if kind in ("fixation", "graph", "tlx"):
             chart_type, _, task = rest.partition("-")
             if chart_type != block:
                 block, block_index = chart_type, block_index + 1
@@ -89,6 +93,9 @@ def study_events(answers: list[dict]) -> pd.DataFrame:
                         "end_ms": mt["end"],
                     }
                 )
+        elif kind == "tlx":
+            scores = {f"tlx_{k.replace('-', '_')}": v for k, v in answer.items()}
+            rows.append(base | {"event": "tlx", "start_ms": a["startTime"], "end_ms": a["endTime"]} | scores)
         elif kind == "validation":
             rows.append(base | {"event": "validation", "start_ms": a["startTime"], "end_ms": a["endTime"]})
     df = pd.DataFrame(rows)
@@ -134,6 +141,24 @@ def crossings(t: np.ndarray, signal: np.ndarray, threshold: float) -> np.ndarray
     """Times where `signal` crosses `threshold` (first sample on the new side)."""
     above = signal > threshold
     return t[np.flatnonzero(np.diff(above.astype(int)) != 0) + 1]
+
+
+def transition_threshold(t: np.ndarray, signal: np.ndarray, chart_on: np.ndarray, lag_s: float = 0.0,
+                         window_s: float = 1.0, guard_s: float = 0.5) -> tuple[float, float, float]:
+    """Brightness threshold between the fixation slide and the chart slide, measured from the data.
+
+    Median signal over `window_s` ending `guard_s` before each chart onset (fixation slide) and over
+    `window_s` starting `guard_s` after it (chart slide); `lag_s` is a rough clock offset of the video.
+    Returns (midpoint, fixation level, chart level). The guard keeps a few hundred ms of sync error
+    out of both levels.
+    """
+    def level(a, b):
+        vals = [np.nanmedian(signal[(t >= x + a) & (t < x + b)]) for x in chart_on + lag_s]
+        return float(np.nanmedian(vals))
+
+    lo = level(-guard_s - window_s, -guard_s)
+    hi = level(guard_s, guard_s + window_s)
+    return (lo + hi) / 2, lo, hi
 
 
 def fit_offset(edges: np.ndarray, reference: np.ndarray, tol: float = 0.5, search: float | None = None) -> tuple:
@@ -218,7 +243,7 @@ def build_timeline(study_json: str | Path, rec_dir: str | Path, screen_offset_s:
         "block_index", "block", "task", "event", "stroke_n", "stroke_id", "kept", "answer", "correct_answer",
         "is_correct", "start_ms", "end_ms", "start_pupil_s", "end_pupil_s", "duration_s", "start_world_s",
         "end_world_s", "start_world_frame", "end_world_frame", "start_screen_s", "end_screen_s", "in_recording",
-        "component", "source",
+        "component", "source", *TLX_COLUMNS,
     ]  # fmt: skip
     ev = ev[[c for c in cols if c in ev.columns]].astype({"block_index": "Int64"})
     if "stroke_n" in ev:

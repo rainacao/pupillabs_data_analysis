@@ -102,3 +102,12 @@ def test_window_dilation_prefix_and_missing_eye():
     r = window_dilation(pupil, win, col="diameter_mm", prefix="mm3d_").iloc[0]
     assert np.isnan(r.mm3d_baseline_eye0_mm) and r.mm3d_n_task_eye0 == 0
     assert r.mm3d_mean_change_pct == pytest.approx(r.mm3d_mean_change_eye1_pct)
+
+
+def test_confidence_suffix():
+    from pupil_analysis.pupil import confidence_suffix
+
+    assert confidence_suffix(0.8) == ""
+    assert confidence_suffix(0.6) == "_conf60"
+    assert confidence_suffix(0.4, "gaze", 0.6) == "_gaze40"
+    assert confidence_suffix(0.6, "gaze", 0.6) == ""

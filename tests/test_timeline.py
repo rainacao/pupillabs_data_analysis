@@ -1,6 +1,13 @@
 import numpy as np
 
-from pupil_analysis.timeline import chart_transitions, crossings, fit_offset, study_events
+from pupil_analysis.timeline import (
+    TLX_COLUMNS,
+    chart_transitions,
+    crossings,
+    fit_offset,
+    study_events,
+    transition_threshold,
+)
 
 T0 = 1_000_000_000_000  # Unix ms
 
@@ -96,3 +103,38 @@ def test_fit_offset_marks_unmatched_references():
     off, res = fit_offset(edges, ref, tol=0.3, search=1.0)
     assert abs(off - 0.1) < 1e-9
     assert res.edge.isna().tolist() == [False, False, False, True]
+
+
+TLX = {"mental-demand": 35, "physical-demand": 20, "temporal-demand": 35, "performance": 85, "effort": 20,
+       "frustration": 25}  # fmt: skip
+
+
+def test_tlx_slide_is_an_event_with_its_scores_and_task():
+    answers = [
+        *ANSWERS[:3],
+        answer("tlx-area-trends_3", "tlx-area-trends", 16100, 26000, TLX),
+        answer("validation-break_4", "validation-break", 26000, 30000),
+    ]
+    ev = study_events(answers)
+    tlx = ev[ev.event == "tlx"]
+    assert len(tlx) == 1
+    row = tlx.iloc[0]
+    assert (row.block, row.task, row.block_index) == ("area", "trends", 1)
+    assert (row.start_ms, row.end_ms) == (T0 + 16100, T0 + 26000)
+    assert [row[c] for c in TLX_COLUMNS] == [35, 20, 35, 85, 20, 25]
+    assert ev[ev.event == "validation"].block.tolist() == ["area"]  # TLX does not start a block
+
+
+def test_studies_without_tlx_get_no_tlx_rows():
+    assert "tlx" not in study_events(ANSWERS).event.tolist()
+
+
+def test_transition_threshold_is_midpoint_of_slide_levels():
+    t = np.arange(0, 60, 1 / 30)
+    on = np.array([10.0, 30.0, 50.0])
+    sig = np.full_like(t, 0.002)
+    for x in on:
+        sig[(t >= x) & (t < x + 8)] = 0.045  # chart slide
+    thr, lo, hi = transition_threshold(t, sig, on)
+    assert (lo, hi) == (0.002, 0.045)
+    assert thr == (0.002 + 0.045) / 2

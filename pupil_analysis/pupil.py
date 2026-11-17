@@ -26,6 +26,14 @@ class Trial:
     end: int  # first frame after the stimulus
 
 
+DEFAULT_MIN_CONFIDENCE = 0.8  # pupil-detection confidence floor used for p1/p2
+
+
+def confidence_suffix(min_confidence: float, tag: str = "conf", default: float = DEFAULT_MIN_CONFIDENCE) -> str:
+    """Output-file suffix for a non-default confidence floor: 0.6 -> `_conf60`; empty for the default."""
+    return "" if min_confidence == default else f"_{tag}{round(100 * min_confidence):02d}"
+
+
 def load_pupil_diameter(
     rec_dir: str | Path,
     min_confidence: float = 0.8,
@@ -48,6 +56,7 @@ def load_pupil_diameter(
     cleaning="kret": `clean_eye` runs per eye (speed + trend + island filters).
     cleaning="pupil_labs": only samples inside Pupil Player's detected blinks (`load_blinks`) are
     dropped, so the remaining filtering is entirely Pupil Labs' (confidence + blink detector).
+    cleaning="none": confidence and plausibility filters only (for data-quality accounting).
     """
     rec_dir = Path(rec_dir)
     offline = rec_dir / "offline_data" / "offline_pupil.pldata"
@@ -77,6 +86,8 @@ def load_pupil_diameter(
     if cleaning == "kret":
         cleaned = [clean_eye(g, col=col) for _, g in df.groupby("eye")]
         return pd.concat(cleaned).sort_values("timestamp").reset_index(drop=True)
+    if cleaning == "none":
+        return df
     if cleaning == "pupil_labs":
         return df[~in_intervals(df.timestamp.to_numpy(), load_blinks(rec_dir))].reset_index(drop=True)
     raise ValueError(f"unknown cleaning {cleaning!r}")
