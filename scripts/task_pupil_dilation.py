@@ -22,6 +22,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.ticker import MaxNLocator
 
 from pupil_analysis.pupil import binned_trace, load_pupil_diameter, window_dilation
 
@@ -106,7 +107,7 @@ def plot(pupil: pd.DataFrame, result: pd.DataFrame, timeline: pd.DataFrame, filt
     for r in result.to_dict("records"):
         ax = axes[blocks.index(r["block"]), tasks.index(r["task"])]
         ax.texts[0].remove()
-        ax.set_xticks([-5, 0, 5, 10, 15, 20, 25])
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=7, steps=[1, 2, 5, 10]))  # charts last 8-76 s
         ax.set_xlim(r["baseline_start"] - r["task_start"], r["task_duration_s"])
         for side in ax.spines.values():
             side.set_color("black")

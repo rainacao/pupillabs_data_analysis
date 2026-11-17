@@ -48,6 +48,7 @@ def load_pupil_diameter(
     cleaning="kret": `clean_eye` runs per eye (speed + trend + island filters).
     cleaning="pupil_labs": only samples inside Pupil Player's detected blinks (`load_blinks`) are
     dropped, so the remaining filtering is entirely Pupil Labs' (confidence + blink detector).
+    cleaning="none": confidence and plausibility filters only (for data-quality accounting).
     """
     rec_dir = Path(rec_dir)
     offline = rec_dir / "offline_data" / "offline_pupil.pldata"
@@ -77,6 +78,8 @@ def load_pupil_diameter(
     if cleaning == "kret":
         cleaned = [clean_eye(g, col=col) for _, g in df.groupby("eye")]
         return pd.concat(cleaned).sort_values("timestamp").reset_index(drop=True)
+    if cleaning == "none":
+        return df
     if cleaning == "pupil_labs":
         return df[~in_intervals(df.timestamp.to_numpy(), load_blinks(rec_dir))].reset_index(drop=True)
     raise ValueError(f"unknown cleaning {cleaning!r}")

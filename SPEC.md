@@ -10,6 +10,7 @@ Eye-tracking analysis for the VLAT line/area annotation study (reVISit + Pupil C
 
 Study order: introduction, then three chart-type blocks (stackarea, area, line; latin-square order).
 Each trial is a 5 s fixation cross followed by a chart with a question and a drawing canvas.
+From p2 on, each chart is followed by a NASA-TLX slide (`tlx-<chart>-<task>`), before the next fixation cross.
 Each block ends with a `validation-break`, during which Pupil Capture runs a screen-marker validation.
 
 ## Clocks (`pupil_analysis/timeline.py`)
@@ -25,9 +26,23 @@ Alignment is checked against the videos. Chart slides show a white panel and fix
 so every chart on/off transition from reVISit should show up as a brightness edge in each video.
 `fit_offset` matches the edges and reports per-transition residuals in `<pid>_sync_check.csv`.
 
+World-video threshold:
+- The world-video white-fraction threshold is measured per participant (`transition_threshold`), because
+  camera exposure differs.
+- It is the midpoint of the median fixation-slide level (1.5–0.5 s before chart onsets) and chart-slide level
+  (0.5–1.5 s after).
+  - p1: 0.094 / 0.128 → 0.111. The old fixed value was 0.11. Refitting p1 with the measured threshold moves the
+    lag from 97.7 to 102.4 ms, still 30/30 matched. p1's outputs were made with the fixed 0.11 and have not been rerun.
+  - p2: 0.002 / 0.043 → 0.022. The fixed 0.11 found no edges at all.
+- The screen-recording threshold stays at 0.2: fixation slides are ~0 and charts ≥ 0.38.
+
 p1 results: all 30/30 transitions matched in each video.
 - World video lags reVISit by a constant 98 ms (display + camera latency), max residual 48 ms.
 - Screen-recording residuals are at most 27 ms.
+
+p2 results: 30/30 matched in each video.
+- World lag is 115 ms, max residual 73 ms.
+- Screen-recording max residual is 65 ms.
 
 Event times are **not** shifted by the 98 ms lag. They are the times reVISit issued the stimulus.
 
@@ -40,6 +55,13 @@ Built by `uv run python scripts/event_timeline.py recordings/<pid>`. There is on
 - `validation`: the reVISit break slide.
 - `validation_markers`: Pupil Capture's marker sequence within the break slide (from `notify.pldata`).
 - `calibration` / pre-study `validation`: from Pupil Capture.
+- `tlx`: the NASA-TLX slide after a chart (slide shown → submitted). It has the same `block` and `task` as
+  its chart, and the six 0–100 ratings as `tlx_mental_demand`, `tlx_physical_demand`, `tlx_temporal_demand`,
+  `tlx_performance`, `tlx_effort` and `tlx_frustration`.
+  - These are also written to `<pid>_tlx.csv`, one row per chart.
+  - reVISit records no per-slider timestamps, only the slide's start/end and raw mouse `windowEvents`.
+  - The direction of the performance scale (whether 100 means good or failure) is not in the export, so
+    no combined raw-TLX score is computed. This must be checked against the study config.
 
 Each row has start/end on every clock, plus `in_recording`.
 
@@ -72,6 +94,30 @@ Interpretation caveats:
 - The white chart panel is brighter than the grey fixation screen. Every task starts with a light-reflex
   constriction (−20 to −35% within ~1 s), so task-mean changes mix brightness with cognitive load.
 - A peak in the first ~0.5 s is baseline carry-over from before the reflex, not a dilation.
+
+### Data quality (`scripts/pupil_quality.py`)
+
+`<pid>_pupil_quality.csv`: for each task's baseline and chart window, per eye, it records:
+- the sampling rate;
+- the fraction of samples passing confidence;
+- the fraction surviving `clean_eye`, and the fraction surviving Pupil-Labs-only filtering;
+- the fraction of 50 ms bins with data;
+- the number of Player blinks.
+
+Medians over tasks:
+
+| | eye0 conf ok | eye1 conf ok | eye0 bins (clean_eye) | eye1 bins | blinks |
+|---|---|---|---|---|---|
+| p1 baseline / chart | 0.98 / 0.96 | 0.98 / 0.99 | 0.90 / 0.83 | 0.89 / 0.88 | 4.2/min |
+| p2 baseline / chart | 0.35 / 0.51 | 0.96 / 0.98 | 0.28 / 0.57 | 0.78 / 0.86 | 20.9/min (7% of the time) |
+
+p2's data loss is mostly **eye0 (right eye) tracking**, not blinks:
+- The eye0 camera image shows the eye in the bottom-left corner, overexposed, with the pupil near the image edge.
+- Median confidence is 0.83 for eye0 vs 1.00 for eye1.
+- A 21/min blink rate is within the normal range.
+
+In p2's eye-mean trace, eye1 alone stands in for long stretches. Worst eye0 chart-bin coverage:
+area/trends 0.28, area/value 0.29, stackarea/trends 0.33.
 
 ## Synced task video (`scripts/sync_video.py`)
 
