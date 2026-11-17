@@ -44,6 +44,16 @@ p2 results: 30/30 matched in each video.
 - World lag is 115 ms, max residual 73 ms.
 - Screen-recording max residual is 65 ms.
 
+p3 results: 30/30 matched in each video. World threshold 0.001 / 0.079 → 0.040.
+- World lag is 166 ms, max residual 56 ms.
+- Screen-recording max residual is 41 ms.
+
+Display: p3 (and, from its 3838 x 2160 screen recording, apparently p2) was run on a desktop monitor
+(Sceptre) with Safari full screen, not on the iPad. The AprilTags are on the monitor corners. p1 is the only
+iPad session (2386 x 1964 recording). This affects the screen mapping (below).
+
+The study JSON is found as `VLAT_*.json`. A bare `*.json` glob could pick up `<pid>_sync_params.json` on reruns.
+
 Event times are **not** shifted by the 98 ms lag. They are the times reVISit issued the stimulus.
 
 ## Output: `<pid>_event_timeline.csv`
@@ -118,6 +128,7 @@ Medians over tasks:
 |---|---|---|---|---|---|
 | p1 baseline / chart | 0.98 / 0.96 | 0.98 / 0.99 | 0.90 / 0.83 | 0.89 / 0.88 | 4.2/min |
 | p2 baseline / chart | 0.35 / 0.51 | 0.96 / 0.98 | 0.28 / 0.57 | 0.78 / 0.86 | 20.9/min (7% of the time) |
+| p3 baseline / chart | 0.76 / 0.89 | 0.92 / 0.84 | 0.65 / 0.65 | 0.77 / 0.64 | 24.2/min (8% of the time) |
 
 p2's data loss is mostly **eye0 (right eye) tracking**, not blinks:
 - The eye0 camera image shows the eye in the bottom-left corner, overexposed, with the pupil near the image edge.
@@ -142,6 +153,28 @@ Alignment:
 - The pupil trace and stroke indicator use the timeline's times unchanged.
 
 Convention: eye0 = right eye, eye1 = left eye.
+
+p3 reported squinting. Both eyes lose data, unlike p2's single bad eye.
+- Fraction of samples at or above each confidence floor (task windows, offline pupil detection):
+  - eye0: 0.82 at 0.8, 0.90 at 0.7, 0.91 at 0.6, 0.92 at 0.5, 0.95 at 0.4.
+  - eye1: 0.82, 0.90, 0.91, 0.92, 0.94 at the same floors.
+  - Recorded gaze during charts: 0.87 at 0.8, 0.91 at 0.6, 0.95 at 0.4.
+- Most of p3's loss comes from `clean_eye`, not from confidence: about 0.85 pass confidence, but only about 0.65 survive cleaning.
+- eye0 runs about 10 pp below eye1 during charts. When one eye drops out of a bin, the "mean of eyes" jumps by
+  that gap, so p3's **peaks** are mostly eye-switching artifacts.
+  - Example: line/extremum at 0.6 has a +14.8% peak at 2.9 s, from eye1 alone.
+  - Task means move ≤ 0.6 pp between floors 0.8 and 0.6.
+
+### Confidence floor (`--min-confidence`)
+- `task_pupil_dilation.py --min-confidence 0.6`: writes `<pid>_pupil_dilation_conf60.{csv,png}`. The default 0.8 has no suffix.
+- `sync_video.py --min-confidence 0.6 --gaze-min-confidence 0.4`: reads the matching dilation CSV and writes
+  `videos/<pid>_<block>-<task>_sync_conf60_gaze40.mp4`. The defaults are 0.8 (pupil) and 0.6 (gaze).
+- `screen_mapping.py --min-confidence` (default 0.6): the floor for the mapped gaze.
+- Validation offsets always use gaze with confidence ≥ 0.8.
+- p3 uses pupil 0.6 and gaze 0.4.
+  - 0.6 is where the pupil curve flattens (0.90 → 0.91 from 0.7 to 0.6).
+  - Gaze goes lower than pupil: low-confidence gaze is jittery but unbiased, while a squint-clipped ellipse
+    biases the diameter itself.
 
 ### Filter versions
 - Default (`clean_eye`): confidence ≥ 0.8, then speed, trend and island artifact filters.
@@ -202,6 +235,23 @@ Checks (`<pid>_screen_mapping_check.csv/.png`; summary in `<pid>_screen_mapping.
   - Median 37 px, max 81 px (15 crosses).
   - Since the geometry is ~5 px there, this is mostly the residual gaze-calibration error.
   - 1 world px is about 4.6 screen px, so this matches the 11–27 world-px validation offsets.
+
+p3 (desktop monitor): the screen mapping fails.
+- The bezel tags are about 25 world px wide. Neither Player nor OpenCV's tag36h11 detector finds any of tags 4–7, and upscaling
+  only produces scattered false IDs.
+- The p3 synced video therefore has no gaze on the screen panel.
+- Mapping the monitor sessions would need their own tag set-up and display corners.
+
+`sync_video.py` measures the screen recording's content area: the last row brighter than 16 in 5 sampled frames.
+This gives 2386 x 1668 on p1, as before, and the full 3838 x 2160 frame on p2/p3.
+
+p3 area/value (pupil 0.6, gaze 0.4):
+- Both panels change slides together.
+- Recorded-gaze validation offsets are 35–51 px left and 7–20 px down, from the area, line and stackarea validations.
+- During the fixation cross, the corrected gaze still sits about 25–30 world px above the cross.
+- Pupil Player's post-hoc gaze is off by 400–780 px at the validations, so its post-hoc calibration is unusable on p3.
+  The Player fixations (and the fixation list in the video) are built on that gaze, so they are suspect for p3.
+- p3 made no annotations: every drawing has 0 elements, so there are no `annotation_stroke` rows.
 
 `sync_video.py` draws this gaze on the screen panel: green samples and a red mean ring, for the world
 frame shown on the left. It now crops the screen recording to exactly 1668 rows. Before, it used 0.84 of 1964 rows,

@@ -26,6 +26,14 @@ class Trial:
     end: int  # first frame after the stimulus
 
 
+DEFAULT_MIN_CONFIDENCE = 0.8  # pupil-detection confidence floor used for p1/p2
+
+
+def confidence_suffix(min_confidence: float, tag: str = "conf", default: float = DEFAULT_MIN_CONFIDENCE) -> str:
+    """Output-file suffix for a non-default confidence floor: 0.6 -> `_conf60`; empty for the default."""
+    return "" if min_confidence == default else f"_{tag}{round(100 * min_confidence):02d}"
+
+
 def load_pupil_diameter(
     rec_dir: str | Path,
     min_confidence: float = 0.8,

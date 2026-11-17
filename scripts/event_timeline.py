@@ -52,7 +52,7 @@ def main() -> None:
     pdir: Path = args.participant_dir
     pid = pdir.name
     rec = next(p.parent for p in pdir.glob("*/info.player.json"))
-    study = next(pdir.glob("*.json"))
+    study = next(pdir.glob("VLAT_*.json"))
     screen = pdir / f"{pid}_screen.mov"
     cache = pdir / ".cache"
     print(f"recording {rec}\nstudy     {study.name}\nscreen    {screen.name}")

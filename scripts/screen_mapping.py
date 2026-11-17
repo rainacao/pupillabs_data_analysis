@@ -91,6 +91,8 @@ def main() -> None:
     ap.add_argument("--method", choices=["pose", "homography"], default="pose",
                     help="per-frame mapping: camera pose (6 DOF, default) or free homography (8 DOF)")
     ap.add_argument("--redetect", action="store_true", help="rerun OpenCV tag detection")
+    ap.add_argument("--min-confidence", type=float, default=0.6,
+                    help="gaze confidence floor for the mapped samples (default 0.6); validation offsets use 0.8")
     args = ap.parse_args()
     pdir: Path = args.participant_dir
     pid = pdir.name
@@ -151,7 +153,7 @@ def main() -> None:
         homs = frame_homographies(tags_ud, model_screen, MIN_TAGS)
 
     # 5. gaze
-    gaze = load_gaze(rec, source="recorded")
+    gaze = load_gaze(rec, min_confidence=args.min_confidence, source="recorded")
     offsets = validation_offsets(rec, load_gaze(rec, min_confidence=0.8, source="recorded"))
     gaze_c = correct_gaze(gaze, offsets)
     gs = map_points(gaze_c, homs, K, D)
@@ -252,6 +254,7 @@ def main() -> None:
                         "frames_used": len(quads), "frames_tried": len(cand), "min_tags": DISPLAY_MIN_TAGS,
                         "median_per_frame_deviation_px_TL_TR_BR_BL": np.round(corner_spread, 1).tolist()},
             "gaze": {"source": "recorded", "corrected": "validation offsets, interpolated in time",
+                     "min_confidence": args.min_confidence, "min_confidence_for_offsets": 0.8,
                      "mapped_fraction": round(float(gs.sx.notna().mean()), 4),
                      "timing": "each gaze sample uses the homography of the world frame it falls in"},
             "checks": summary,
