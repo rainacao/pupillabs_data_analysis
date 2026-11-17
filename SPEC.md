@@ -65,6 +65,14 @@ Built by `uv run python scripts/event_timeline.py recordings/<pid>`. There is on
 
 Each row has start/end on every clock, plus `in_recording`.
 
+### TLX comparison plot (`scripts/tlx_plot.py`)
+
+`uv run python scripts/tlx_plot.py recordings/p2 recordings/p3` writes `recordings/tlx_p2_p3.{png,csv}`.
+- Ratings are read straight from each reVISit JSON, so it doesn't need the Pupil recording or a built timeline.
+- There is one panel per TLX scale. Rows are chart/task pairs, grouped area → stackarea → line, with one marker
+  per participant. Participants are shifted slightly up or down so tied ratings stay visible.
+- All study tasks are shown, including stackarea's `-relative` tasks, because TLX was asked after every chart.
+
 ## Pupil dilation per task (`scripts/task_pupil_dilation.py`)
 
 Output: `<pid>_pupil_dilation.csv`, one row per task.
