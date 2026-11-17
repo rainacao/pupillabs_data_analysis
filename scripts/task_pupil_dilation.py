@@ -89,10 +89,13 @@ def task_windows(timeline: pd.DataFrame) -> pd.DataFrame:
 
 # Column order of the plot grid: related tasks side by side. Tasks not listed go at the end.
 TASK_ORDER = ["value", "comparisons", "trends", "extremum", "range"]
+# Row order of the plot grid, fixed so participants are comparable regardless of the order the
+# blocks were presented in (that is shown in each row label). Blocks not listed go at the end.
+BLOCK_ORDER = ["line", "area", "stackarea"]
 
 
 def plot(pupil: pd.DataFrame, result: pd.DataFrame, timeline: pd.DataFrame, filter_note: str = ""):
-    """Grid of rows = chart type (presentation order), columns = task (same task in every row).
+    """Grid of rows = chart type (BLOCK_ORDER), columns = task (same task in every row).
 
     Each cell: each eye's % change from its baseline over fixation cross + task, the mean of the
     eyes, the task mean and peak, and the annotation strokes (pen down -> pen up) as shaded bands
@@ -100,13 +103,15 @@ def plot(pupil: pd.DataFrame, result: pd.DataFrame, timeline: pd.DataFrame, filt
     """
     present = list(result.task.unique())
     tasks = [t for t in TASK_ORDER if t in present] + [t for t in present if t not in TASK_ORDER]
-    blocks = result.drop_duplicates("block_index").sort_values("block_index").block.tolist()
+    shown = result.drop_duplicates("block_index").sort_values("block_index").block.tolist()
+    blocks = [b for b in BLOCK_ORDER if b in shown] + [b for b in shown if b not in BLOCK_ORDER]
     fig, axes = plt.subplots(len(blocks), len(tasks), figsize=(3.2 * len(tasks), 3 * len(blocks)), sharey=True)
     axes = axes.reshape(len(blocks), len(tasks))
     for j, task in enumerate(tasks):
         axes[0, j].set_title(task, fontsize=11, fontweight="bold")
     for i, block in enumerate(blocks):
-        axes[i, 0].set_ylabel(f"$\\bf{{{block}}}$\n% change from baseline", fontsize=9)
+        axes[i, 0].set_ylabel(f"$\\bf{{{block}}}$ (shown {shown.index(block) + 1}/{len(shown)})\n% change from baseline",
+                              fontsize=9)  # fmt: skip
     for ax in axes.flat:
         ax.set_xticks([])
         ax.text(0.5, 0.5, "not in block", transform=ax.transAxes, ha="center", va="center", color="0.6", fontsize=8)
